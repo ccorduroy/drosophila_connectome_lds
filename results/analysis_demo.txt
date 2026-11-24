@@ -1,0 +1,67 @@
+==============================================================================
+PART 1: structure vs function  (mean FC across 20 flies, 630 region pairs)
+==============================================================================
+  CellCount              Spearman rho = 0.682   permutation p = 0.0005
+  Connectivity           Spearman rho = 0.689   permutation p = 0.0005
+  TBars                  Spearman rho = 0.714   permutation p = 0.0005
+  WeightedSynapseNumber  Spearman rho = 0.671   permutation p = 0.0005
+  (with 2000 permutations the smallest possible p is 1/2001 = 0.0005: no shuffle reached the real rho)
+  per-fly rho (Connectivity): median 0.58, range 0.43 to 0.68
+  FC repeatability (mean FC of 10 flies vs the other 10): rho = 0.934  -> FC is a stable, shared feature across animals, so there is something real to explain
+  SC vs mean PARTIAL correlation (direct-coupling proxy): rho = 0.482  (weaker than for plain FC, as expected, but clearly positive)
+
+==============================================================================
+PART 2: one-step-ahead prediction R^2 (ridge lambda = 100, 36 regions)
+==============================================================================
+  leave-one-fly-out VAR(1): median 0.341, range 0.152 to 0.517
+  same-fly 70/30 VAR(1):    median 0.342
+  persistence baseline:     median -0.019
+
+==============================================================================
+PART 3: does the data look like what a linear-Gaussian state-space model assumes?
+==============================================================================
+  3a. flat high-frequency floor (0.45-0.59 Hz) = 0.47 of total variance on average (per fly 0.32 to 0.60)
+      -> imaging noise is a large share of every frame, so a model with an explicit observation-noise term
+         is justified, and one-step R^2 against noisy frames is capped near 1 - 0.47 = 0.53.
+      (assumes the floor extends flat below 0.45 Hz; some of it could be real fast activity, so treat as approximate)
+  3b. residual lag-1 autocorrelation: median -0.01 (range -0.10 to +0.17) -> residuals are close to white, so one lag of memory captures the linear temporal structure
+      residual excess kurtosis (0 = Gaussian): median 0.61 (range 0.27 to 2.53) -> mildly heavy-tailed; roughly Gaussian for most flies, with a few outlier-prone ones
+      residual cross-region |correlation| (0 = independent): median 0.16 -> residuals are shared across regions, so the noise covariance should be FULL, not diagonal
+      sanity check on 3a: flies with a higher noise floor are harder to predict (Spearman rho = -0.80 between floor and LOFO R^2)
+  3c. leave-one-fly-out median R^2 by model:  each region alone (diagonal A) 0.274 | full VAR(1) 0.341 | VAR(2) 0.350 | VAR(3) 0.350 | VAR(5) 0.350
+      -> cross-region coupling adds +0.067 R^2 over regions-alone; extra lags add at most +0.010,
+         so a first-order model on the 36 regions is adequate (the data do not demand extra memory/hidden states)
+  3d. PCA of the 36 regions: PC1 = 33%, first 3 = 45%, first 5 = 52% of variance; participation ratio = 7.8; 90% needs 25 PCs
+      (a few strong shared modes plus a long flat tail, consistent with the noise floor in 3a: real redundancy to exploit)
+  3e. FC pattern, first half vs second half of each recording: rho median 0.87 (range 0.75 to 0.95); same-fly 70/30 R^2 (0.342) ~ cross-fly R^2 (0.341)
+      -> dynamics are stable within a recording and shared across animals, which is what a fixed A requires
+
+==============================================================================
+PART 4: what does the connectome add beyond generic structure?
+==============================================================================
+  4a. off-diagonal of the fitted A (symmetrised) vs wiring: Spearman rho = 0.380, permutation p = 0.0005
+      -> the dynamics, not just the correlations, line up with the connectome (weaker than FC, as expected: A is a harder object)
+  4b. small-data learning curve (median R^2 on the 15 test flies; train on the first m frames of the SAME fly only)
+      m frames              ridge to zero       persistence prior  uniform-coupling prior        connectome prior   shuffled-wiring prior
+            30                      0.162                   0.255                   0.280                   0.288                   0.280
+            60                      0.196                   0.262                   0.281                   0.290                   0.281
+           120                      0.239                   0.291                   0.298                   0.300                   0.298
+           250                      0.265                   0.306                   0.304                   0.310                   0.304
+           500                      0.311                   0.339                   0.339                   0.340                   0.339
+          1000                      0.343                   0.348                   0.348                   0.348                   0.348
+      m=30 (25 s of data): connectome - shuffled = +0.008 median over flies (connectome better in 14/15 flies, Wilcoxon p = 0.0001)
+      m=120 (100 s of data): connectome - shuffled = -0.003 median over flies (connectome better in 7/15 flies, Wilcoxon p = 0.7197)
+      -> nearly all of the small-data gain comes from a persistence + shared-coupling prior (which a shuffled matrix also supplies).
+         The specific wiring adds only about +0.01 R^2, visible at ~30-60 frames and gone by ~120 frames: at region level,
+         a connectome prior on A is barely separable from generic shrinkage.
+  4c. hidden-region reconstruction, median R^2 on hidden regions (10 random hidden sets x 20 held-out flies)
+      hidden    static-conditioning   +temporal context   wiring-only   shuffled-wiring   uniform-average
+        25%                   0.410               0.427           0.279           0.268           0.268
+        50%                   0.365               0.382           0.266           0.246           0.249
+        75%                   0.311               0.330           0.239           0.220           0.224
+      25% hidden: wiring - shuffled = +0.017 (better in 20/20 flies, Wilcoxon p = 1.9e-06);   context - static = +0.019 (better in 19/20)
+      50% hidden: wiring - shuffled = +0.017 (better in 20/20 flies, Wilcoxon p = 1.9e-06);   context - static = +0.019 (better in 19/20)
+      75% hidden: wiring - shuffled = +0.016 (better in 20/20 flies, Wilcoxon p = 1.9e-06);   context - static = +0.023 (better in 19/20)
+      -> wiring-only beats a shuffled or uniform guess by a small but consistent margin (about +0.02 R^2) without seeing any
+         data from the hidden region; the covariance learned from other flies does far better (it knows the hidden region);
+         adding +/-2 frames of temporal context (the part a smoother adds) gains only about +0.02 on top of that.

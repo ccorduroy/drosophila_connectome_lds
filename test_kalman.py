@@ -1,14 +1,10 @@
 """
-Gate G1 tests for kalman.py (Protocol and Model Spec, section 13; work-plan phase 2):
-U1, U2, U3, U4, U6, U9.
+tests for kalman.py
+U1, U2, U3, U4, U6, U9
 
-    python test_kalman.py                                  # synthetic tests (all of G1 except real-data U9)
+    python test_kalman.py                                      # all synthetic tests
     python test_kalman.py --npz data_processed/fly_ito36.npz   # + U9 on three real flies
-    pytest -q test_kalman.py                               # same synthetic tests under pytest
-
-U9 (section-13 table, added Nov 23): the steady-state filter/smoother agrees with the
-exact time-varying recursion to a maximum relative difference below 1e-4, on synthetic
-data and on three real flies.
+    pytest -q test_kalman.py                                   # same synthetic tests under pytest
 
 Running this file also writes seeds.json (first run) or verifies it (every later run);
 see ensure_seeds().
@@ -27,23 +23,22 @@ import kalman as K
 
 TOL_U1 = 1e-9; TOL_U2 = 1e-8; TOL_U4 = 1e-9; TOL_U6 = -1e-10; TOL_U9 = 1e-4
 
-
-# --------------------------------------------------------------------------------------
-# seeds.json (spec sections 10, 11, 15): every seed and random draw, derived from the
-# global seed 675 by fixed rules, written once and then only verified. Commit it (and its
-# SHA-256) before any phase-3 simulation or any real-data fit.
-# --------------------------------------------------------------------------------------
+# seeds.json (spec sections 10, 11, 15): every seed and random draw, derived from the global seed 675 by fixed rules, written once and then only verified
 GLOBAL_SEED = 675
 N_REGIONS = 36
 SEEDS_PATH = os.environ.get('SEEDS_JSON', 'seeds.json')
 
 
+# unit test Uk, case c -> [675, 1000 + k, c]. 
+#   Offset by 1000 so no unit test reuses a protocol seed 
+#   (the old [675, 9, 0] for U9 was shuffle permutation 0)
 def unit_seed(test_no, case=0):
     """Unit test Uk, case c -> [675, 1000 + k, c]. Offset by 1000 so no unit test reuses
     a protocol seed (the old [675, 9, 0] for U9 was shuffle permutation 0)."""
     return [GLOBAL_SEED, 1000 + test_no, case]
 
 
+# build the seeds.json dictionary from the fixed rules, or initialize if absent
 def build_seeds():
     hidden = {}
     for p in (0.25, 0.50, 0.75):
@@ -79,9 +74,10 @@ def build_seeds():
     }
 
 
+# write seeds.json if absent; otherwise verify it matches the fixed rules exactly
+# returns the seeds dict
+
 def ensure_seeds(path=SEEDS_PATH):
-    """Write seeds.json if absent; otherwise verify it matches the fixed rules exactly
-    (apart from 'created' and any recorded 'reductions'). Returns the seeds dict."""
     want = build_seeds()
     if not os.path.exists(path):
         out = copy.deepcopy(want); out['created'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
@@ -99,9 +95,7 @@ def ensure_seeds(path=SEEDS_PATH):
     return have
 
 
-# --------------------------------------------------------------------------------------
 # Random systems and brute-force joint Gaussian
-# --------------------------------------------------------------------------------------
 def random_system(n, rng, rho=0.9):
     A = rng.standard_normal((n, n))
     A *= rho / max(abs(np.linalg.eigvals(A)))
@@ -122,8 +116,8 @@ def simulate(A, Q, r, S0, T, rng):
     return X, X + np.sqrt(r) * rng.standard_normal((T, n))
 
 
+# cov of the stacked state (x_1..x_T), (T n) x (T n)
 def joint_state_cov(A, Q, S0, T):
-    """Cov of the stacked state (x_1..x_T), (T n) x (T n)."""
     n = A.shape[0]
     Sig = [S0]
     for _ in range(1, T):
@@ -134,17 +128,17 @@ def joint_state_cov(A, Q, S0, T):
     Kxx = np.empty((T * n, T * n))
     for t in range(T):
         for s in range(t + 1):
-            B = Apow[t - s] @ Sig[s]                       # Cov(x_t, x_s), t >= s
+            B = Apow[t - s] @ Sig[s]    # Cov(x_t, x_s), t >= s
             Kxx[t*n:(t+1)*n, s*n:(s+1)*n] = B
             Kxx[s*n:(s+1)*n, t*n:(t+1)*n] = B.T
     return Kxx
 
 
+# E[x | y_{1..upto}] and Cov, where only masked entries of frames are observed.
 def brute_condition(Kxx, Y, mask, r, upto):
-    """E[x | y_{1..upto}] and Cov, where only masked entries of frames < upto are observed."""
     T, n = Y.shape
     m = mask.copy(); m[upto:] = False
-    idx = np.flatnonzero(m.ravel())                       # positions in the stacked vector
+    idx = np.flatnonzero(m.ravel()) # positions in the stacked vector
     if idx.size == 0:
         return np.zeros(T * n), Kxx.copy()
     Kyy = Kxx[np.ix_(idx, idx)] + np.diag(np.tile(r, T)[idx])
@@ -168,9 +162,8 @@ def brute_loglik(Kxx, Y, mask, r):
 def blk(M, t, s, n):
     return M[t*n:(t+1)*n, s*n:(s+1)*n]
 
-
+# Max abs errors: filtered mean, filtered cov, smooth mean, smooth cov, lag cov, loglik
 def compare_to_brute(A, Q, r, S0, Y, mask):
-    """Max abs errors (filt mean, filt cov, smooth mean, smooth cov, lag cov, loglik)."""
     T, n = Y.shape
     fr, sr = K.filter_smooth(Y, mask, A, Q, r, S0)
     Kxx = joint_state_cov(A, Q, S0, T)
@@ -186,10 +179,9 @@ def compare_to_brute(A, Q, r, S0, Y, mask):
     ell = abs(fr.loglik - brute_loglik(Kxx, Y, mask, r))
     return ef, efc, es, esc, el, ell
 
+# ------------------------------------------------------------------------------------
 
-# --------------------------------------------------------------------------------------
-# U1-U4: n = 3, T = 10 to 200
-# --------------------------------------------------------------------------------------
+# U1-U4: n = 3, T = 10, 50, 200
 CASES = [(0, 10), (1, 50), (2, 200)]
 
 
@@ -215,10 +207,10 @@ def test_U2_loglik():
 def _random_mask(T, n, rng, p_miss=0.35, p_allmiss=0.1):
     mask = rng.random((T, n)) > p_miss
     mask[rng.random(T) < p_allmiss] = False
-    mask[0] = False                    # all-missing first frame
-    mask[-1] = False                   # all-missing last frame
+    mask[0] = False     # all-missing first frame
+    mask[-1] = False    # all-missing last frame
     if T > 4:
-        mask[2:4] = False              # consecutive all-missing frames
+        mask[2:4] = False   # consecutive all-missing frames
     return mask
 
 
@@ -248,9 +240,7 @@ def test_U4_lag_one_cross_cov():
             assert el < TOL_U4, (seed, T, el)
 
 
-# --------------------------------------------------------------------------------------
 # U6: Joseph-form covariances symmetric and PSD over 40,000 steps at n = 36
-# --------------------------------------------------------------------------------------
 def test_U6_psd_long_run(T=40_000, n=36):
     rng = np.random.default_rng(unit_seed(6))
     A, Q, r, S0 = random_system(n, rng, rho=0.97)
@@ -269,9 +259,9 @@ def test_U6_psd_long_run(T=40_000, n=36):
     return worst
 
 
-# --------------------------------------------------------------------------------------
-# U9: steady-state path agrees with the exact recursion (< 1e-4 relative)
-# --------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------
+
+# U9: steady-state path agrees with the exact recursion (< 1e-4 diff)
 def _rel(a, b):
     return float(np.max(np.abs(a - b)) / max(np.max(np.abs(b)), 1e-300))
 
@@ -298,11 +288,11 @@ def test_U9_steady_state_synthetic():
         assert max(d.values()) < TOL_U9, d
 
 
-# --------------------------------------------------------------------------------------
-# U9 on three real flies (spec section 8: "verify against the exact version on three flies")
-# Parameters: the section-10 initialisation, pooled over all 20 flies, C = I and one
-# 50%-hidden set. These are realistic parameter values, not a fit.
-# --------------------------------------------------------------------------------------
+# U9 on three real flies
+# params: 
+#   initialisation (section 10), pooled over all 20 flies
+#   C = I
+#   one 50%-hidden set
 def section10_init(flies, lam=100.0, fs=1.2):
     from scipy.signal import welch
     segs = [s for v in flies.values() for s in v]
@@ -355,7 +345,7 @@ def time_e_step(npz_path):
               f"{time.perf_counter() - t0:.2f} s")
 
 
-# --------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--npz', help='fly_ito36.npz, for U9 on three real flies and E-step timing', default='data_processed/fly_ito36.npz')
