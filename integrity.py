@@ -46,6 +46,7 @@ def build_seeds():
     folds = {key: [validation_folds(sets[j], key, j) for j in range(len(sets))] for key, sets in hidden.items()}
     search = random_search_configs()
     search_v2 = random_search_configs(kappas=(0.01, 0.1, 1.0), stream=401)
+    search_v3 = extended_search_configs(search_v2)
     return {
         'global_seed': GLOBAL_SEED,
         'n_regions': N_REGIONS,
@@ -58,6 +59,8 @@ def build_seeds():
             'unit_tests': 'unit test Uk, case c: default_rng([675, 1000 + k, c])',
             'random_search': 'R3 tuning configurations (spec section 10: 16 per variant): M0 uses all 5 kappa values; for M1, M2 and M3 (M3 shared by M4 and M5), the grid of section 6 restricted to d + a_u <= 0.9, in itertools.product order of (kappa, d, a_u, a_w), sampled without replacement by default_rng([675, 400, k]).choice(len(grid), 16), k = 1, 2, 3; configurations with rho(A0) >= 0.98 for the real wiring or any shuffle are dropped at run time and reported (adopted Nov 24)',
             'random_search_v2': 'protocol v2 (tier B amendment 2, approved Nov 26): as random_search but with kappa restricted to (0.01, 0.1, 1) for M1-M4 and default_rng([675, 401, k]); M0 unchanged',
+            'random_search_v3': 'protocol v3 (grid-edge rule, spec section 14, Nov 27): tier A-prime chose an upper grid edge in more than 20% of its 15 selections for kappa (1), d (0.75), a_u (0.5) and a_w (2), so each is extended once by one step: kappa 10, d 0.9 (the d + a_u <= 0.9 limit), a_u 0.75, a_w 4. Lower edges are the natural bound 0 or the kappa >= 0.01 floor of amendment 2 and are not extended. Nested in v2: each of M1, M2 and M3 keeps its 16 random_search_v2 configurations in order and appends 8 drawn without replacement by default_rng([675, 402, k]), k = 1, 2, 3, from the points of the extended grid that use at least one new value (d + a_u <= 0.9); M1 has exactly 8 such points and takes all of them; M4 uses M3 as before; M0 unchanged',
+            'protocol_v3': 'protocol v2 with random_search_v3 (grid-edge extension, Nov 27); model, Q prior, caps and everything else as protocol v2',
             'protocol_v2': 'tier B amendments approved Nov 26 after the tier A run (spec section 12): connectome inverse-Wishart prior on Q with kappa_Q = 1 (prior.q_target, structured fraction 0.5); random_search_v2; final-fit cap 300; hidden-set summary, B6 check before H2 and H1 against B8 reported. Tier A results (protocol v1) stay reported as run',
             'validation_folds': 'hidden set j of fraction p: visible = sorted complement; order = default_rng([675, 300, int(100*p), j]).permutation(len(visible)); folds = array_split(visible[order], 3), each sorted. R3 tuning hides each fold in turn and scores the mean over the 3 (spec sections 10, 11; adopted Nov 23)',
         },
@@ -66,9 +69,11 @@ def build_seeds():
         'validation_folds': folds,
         'random_search': search,
         'random_search_v2': search_v2,
+        'random_search_v3': search_v3,
         'protocol_v2': {'q_prior': True, 'kappa_Q': 1.0, 'q_structured_frac': 0.5,
                         'random_search': 'random_search_v2', 'final_em_iters_max': 300,
                         'approved': '2026-11-26'},
+        'protocol_v3': {'base': 'protocol_v2', 'random_search': 'random_search_v3', 'approved': '2026-11-27'},
         'tiers': {
             'A': {'hidden_sets': [0, 1, 2, 3, 4], 'shuffles': list(range(10)),
                   'models': ['M0', 'M1', 'M2', 'M3', 'M4'], 'regimes': ['R3'],
@@ -84,12 +89,31 @@ def build_seeds():
 
 SEARCH_GRID = {'kappa': (0.0, 0.001, 0.01, 0.1, 1.0), 'd': (0.0, 0.25, 0.5, 0.75),
                'a_u': (0.0, 0.25, 0.5), 'a_w': (0.0, 0.5, 1.0, 2.0)}       # spec section 6 (= prior.GRID)
+GRID_V3 = {'kappa': (0.01, 0.1, 1.0, 10.0), 'd': (0.0, 0.25, 0.5, 0.75, 0.9),
+           'a_u': (0.0, 0.25, 0.5, 0.75), 'a_w': (0.0, 0.5, 1.0, 2.0, 4.0)}   # protocol v3 (grid-edge rule, Nov 27)
+GRID_V2 = {**SEARCH_GRID, 'kappa': (0.01, 0.1, 1.0)}                      # protocol v2 grid (amendment 2)
 SEARCH_FREE = {'M1': ('kappa', 'd'), 'M2': ('kappa', 'd', 'a_u'), 'M3': ('kappa', 'd', 'a_u', 'a_w')}
 
 
-def random_search_configs(k=16, kappas=None, stream=400):
+def extended_search_configs(base, k_new=8, stream=402):
+    """Protocol v3: each of M1-M3 keeps its base (v2) configurations and appends k_new drawn from the
+    extended-grid points that use at least one value new in GRID_V3 (spec section 14, Nov 27)."""
     import itertools
-    grid = dict(SEARCH_GRID)
+    out = {'M0': [dict(c) for c in base['M0']]}
+    for idx, m in enumerate(('M1', 'M2', 'M3'), start=1):
+        names = SEARCH_FREE[m]
+        old = {x: set(GRID_V2[x]) for x in names}
+        pts = [dict(zip(names, v)) for v in itertools.product(*(GRID_V3[x] for x in names))
+               if v[names.index('d')] + (v[names.index('a_u')] if 'a_u' in names else 0.0) <= 0.9
+               and any(val not in old[x] for x, val in zip(names, v))]
+        pick = np.random.default_rng([GLOBAL_SEED, stream, idx]).choice(len(pts), min(k_new, len(pts)), replace=False)
+        out[m] = [dict(c) for c in base[m]] + [{x: float(y) for x, y in pts[i].items()} for i in sorted(int(j) for j in pick)]
+    return out
+
+
+def random_search_configs(k=16, kappas=None, stream=400, grid=None):
+    import itertools
+    grid = dict(SEARCH_GRID if grid is None else grid)
     if kappas is not None:
         grid['kappa'] = tuple(kappas)
     out = {'M0': [{'kappa': v} for v in SEARCH_GRID['kappa']]}        # M0 keeps all 5 (amendment 2 is M1-M4)
@@ -184,6 +208,12 @@ def tier_settings(seeds, tier, protocol='v1'):
         if 'protocol_v2' not in seeds:
             raise RuntimeError("seeds.json has no protocol_v2 entry: run `python integrity.py --amend`, re-hash and commit")
         t.update({k: v for k, v in seeds['protocol_v2'].items() if k != 'approved'})
+    elif protocol == 'v3':
+        for key in ('protocol_v2', 'protocol_v3'):
+            if key not in seeds:
+                raise RuntimeError(f"seeds.json has no {key} entry: run `python integrity.py --amend`, re-hash and commit")
+        t.update({k: v for k, v in seeds['protocol_v2'].items() if k != 'approved'})
+        t.update({k: v for k, v in seeds['protocol_v3'].items() if k not in ('approved', 'base')})
     elif protocol != 'v1':
         raise ValueError(protocol)
     t['protocol'] = protocol

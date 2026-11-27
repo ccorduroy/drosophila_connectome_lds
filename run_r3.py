@@ -194,6 +194,37 @@ def run_stage(pool, cache, jobs, label):
                   f"~{el / done * (len(todo) - done) / 60:.0f} min left", flush=True)
 
 
+def reuse_v2_fits(cache, seeds, Wt, perms, cfgs, v2_path, kQ):
+    """Protocol v3 nests v2: every model's v2 configurations are the first entries of its v3 list, in the
+    same order, so a v2 job and the v3 job with the same key are the same computation (stage A: M0
+    warm starts; stages B and C: same mask, model, configuration index, shuffle, Q prior and iteration
+    cap). Checks that nesting, then copies those finished fits into the v3 cache."""
+    v2_tier = tier_settings(seeds, 'A', 'v2')
+    for k in ('hidden_sets', 'shuffles', 'tuning_em_iters', 'final_em_iters_max', 'kappa_Q', 'q_structured_frac'):
+        if v2_tier[k] != tier_settings(seeds, 'A', 'v3')[k]:
+            raise RuntimeError(f"v2 and v3 differ in {k}: no reuse")
+    n_v2 = {}
+    for m in MODELS:
+        c2, _ = configs_for(m, seeds, Wt, perms, 'random_search_v2')
+        if cfgs[m][:len(c2)] != c2:
+            raise RuntimeError(f"{m}: v3 configurations do not start with the v2 ones: no reuse")
+        n_v2[m] = len(c2)
+    if not os.path.exists(v2_path):
+        raise RuntimeError(f"{v2_path} not found")
+    v2 = Cache(v2_path)
+    added = 0
+    for key, r in v2.d.items():
+        if key in cache.d:
+            continue
+        parts = key.split('|')
+        if parts[0] in ('B', 'C'):
+            m, ci = (parts[4], parts[5]) if parts[0] == 'B' else (parts[3], parts[4])
+            if int(ci[1:]) >= n_v2[m]:
+                continue
+        cache.add(r); added += 1
+    print(f"  reused {added} finished protocol-v2 fits from {v2_path} (nesting checked)", flush=True)
+
+
 # --------------------------------------------------------------------------------------
 # Baselines B4-B8 as Pearson r (same hidden sets and metric)
 # --------------------------------------------------------------------------------------
@@ -283,7 +314,7 @@ def sim_note(protocol):
     """Simulation context for the H2 and H3 lines, read from the G2 results of the same protocol
     (results/simulations_v2.json for v2, results/simulations.json for v1): the H3 quantity under
     S1's planted connectome effect, and S2's M3 - M4 when there is no connectome effect."""
-    path = 'results/simulations_v2.json' if protocol == 'v2' else 'results/simulations.json'
+    path = 'results/simulations_v2.json' if protocol in ('v2', 'v3') else 'results/simulations.json'   # v3 changes the grid only
     try:
         with open(path) as f:
             res = json.load(f)['results']
@@ -301,7 +332,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--npz', default='data_processed/fly_ito36.npz')
     ap.add_argument('--tier', default='A', choices=['A', 'B'])
-    ap.add_argument('--protocol', default='v2', choices=['v1', 'v2'])
+    ap.add_argument('--protocol', default='v2', choices=['v1', 'v2', 'v3'],
+                    help='v3 (Nov 27) = v2 with the grid-edge extension (seeds.json random_search_v3)')
+    ap.add_argument('--reuse_v2', action='store_true',
+                    help='v3 only: copy finished v2 fits whose job is identical (same stage, mask, model, '
+                         'configuration and shuffle; checked) into the v3 cache instead of refitting them')
     ap.add_argument('--matrix', default='Connectivity')
     ap.add_argument('--workers', type=int, default=os.cpu_count() or 1)
     ap.add_argument('--cache', default=None, help='default results/r3_tier<A|B>/fits.jsonl')
@@ -310,7 +345,7 @@ def main():
     ap.add_argument('--report_only', action='store_true', help='no fitting: report from the cache')
     ap.add_argument('--no_hash_check', action='store_true', help='never for a real run')
     cfg = ap.parse_args()
-    tag = f"r3_tier{cfg.tier}" + ('_v2' if cfg.protocol == 'v2' else '') + ('_smoke' if cfg.smoke else '')
+    tag = f"r3_tier{cfg.tier}" + ({'v2': '_v2', 'v3': '_v3'}.get(cfg.protocol, '')) + ('_smoke' if cfg.smoke else '')
     cfg.cache = cfg.cache or f"results/{tag}/fits.jsonl"
     cfg.out = cfg.out or f"results/{tag}.json"
 
@@ -360,6 +395,10 @@ def main():
                                                          for b in ('B4', 'B5', 'B6', 'B7', 'B8')))
 
     cache = Cache(cfg.cache)
+    if cfg.reuse_v2 and not cfg.report_only:
+        if cfg.protocol != 'v3' or cfg.smoke:
+            raise ValueError("--reuse_v2 is for the full protocol-v3 run only")
+        reuse_v2_fits(cache, seeds, Wt, perms, cfgs, f"results/r3_tier{cfg.tier}_v2/fits.jsonl", kQ)
     pool = None
     if not cfg.report_only:
         payload = {'flies': flies, 'order': order, 'n': n, 'Wt': Wt}
@@ -450,7 +489,7 @@ def main():
                 score_f[fr][m] = dict(zip(order, (float(x) for x in _fz(np.array(per_set_f), axis=0))))
 
     complete = all(m in score[fr] for fr in fracs for m in MODELS)
-    label = f"tier {cfg.tier}" + ("'" if cfg.protocol == 'v2' else '') + f" (protocol {cfg.protocol}) = preliminary"
+    label = f"tier {cfg.tier}" + {"v2": "'", "v3": "' (grid-edge extension)"}.get(cfg.protocol, '') + f" (protocol {cfg.protocol}) = preliminary"
     print(f"\nHidden-region r (smoothed), median over flies [filtered in brackets]; {label}:")
     for fr in fracs:
         if all(m in score[fr] for m in MODELS):
