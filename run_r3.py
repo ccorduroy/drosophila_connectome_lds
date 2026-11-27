@@ -280,18 +280,18 @@ def tests(score, order):
 
 
 def sim_note(protocol):
-    """Simulation context for the H2 line, read from the G2 results of the same protocol
-    (results/simulations_v2.json for v2, results/simulations.json for v1)."""
+    """Simulation context for the H2 and H3 lines, read from the G2 results of the same protocol
+    (results/simulations_v2.json for v2, results/simulations.json for v1): the H3 quantity under
+    S1's planted connectome effect, and S2's M3 - M4 when there is no connectome effect."""
     path = 'results/simulations_v2.json' if protocol == 'v2' else 'results/simulations.json'
     try:
         with open(path) as f:
             res = json.load(f)['results']
-        s1 = res['S1']['R3']
-        s1_txt = ", ".join(f"{int(float(k) * 100)}% {v['M3-M4']['median']:+.3f}"
-                           for k, v in sorted(s1.items(), key=lambda kv: float(kv[0])))
-        s2 = [v['M3-M4']['median'] for v in res['S2'].values()]
-        return (f"G2 simulations ({protocol}, {path}): S1 M3 - M4 under a planted connectome effect {s1_txt}; "
-                f"S2 M3 - M4 with no connectome effect (M4 tuning noise) {max(s2):+.4f}")
+        h3 = res['S1']['H3_like']['median']
+        s2 = max(v['M3-M4']['median'] for v in res['S2'].values())
+        return (f"G2 simulations ({protocol}, {path}): S1 found the H3 quantity {h3:+.3f} under a planted "
+                f"connectome effect ({'opposite sign to H3' if h3 < 0 else 'same sign as H3'}); S2 showed M4 tuning "
+                f"noise can favour H2 by about {s2:.3f} with no connectome effect")
     except (OSError, KeyError, ValueError) as e:
         return f"G2 simulation results for protocol {protocol} not available ({path}: {e.__class__.__name__})"
 

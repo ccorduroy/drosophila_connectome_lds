@@ -43,7 +43,7 @@ Primary family (Holm over 7; supported = Holm p < 0.05, median >= 0.02, 95% CI >
    H1 75%           p 1.9e-06, Holm 1.3e-05 -> SUPPORTED   (M3-M1: median +0.5386 [+0.4910, +0.5599])
    H2 75%           p 1.9e-06, Holm 1.3e-05 -> not supported   (M3-M4: median +0.0212 [+0.0187, +0.0224]; M3-M2: median +0.0182 [+0.0159, +0.0198])
    H3 (75% - 25%)   p 3.8e-06, Holm 1.3e-05 -> not supported   (gap75-gap25: median -0.0054 [-0.0097, -0.0038])
-   notes: G2 simulations (v2, results/simulations_v2.json): S1 M3 - M4 under a planted connectome effect 25% +0.030, 50% +0.033, 75% +0.025; S2 M3 - M4 with no connectome effect (M4 tuning noise) +0.0026.
+   notes: G2 simulations (v2, results/simulations_v2.json): S1 found the H3 quantity -0.006 under a planted connectome effect (opposite sign to H3); S2 showed M4 tuning noise can favour H2 by about 0.003 with no connectome effect.
    25%: rank of real wiring among 6 (1 = best; ties counted in its favour), median over flies 1; best in 20/20 flies
    50%: rank of real wiring among 6 (1 = best; ties counted in its favour), median over flies 1; best in 20/20 flies
    75%: rank of real wiring among 6 (1 = best; ties counted in its favour), median over flies 1; best in 20/20 flies
