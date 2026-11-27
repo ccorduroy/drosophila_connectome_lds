@@ -1,0 +1,2 @@
+G2 (protocol v2): PASS  verdict={'S0': True, 'S1': True, 'S2': True, 'S3': True}  simulate exit=0
+tier A' run_r3 exit=0

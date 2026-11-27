@@ -279,6 +279,23 @@ def tests(score, order):
     return rows
 
 
+def sim_note(protocol):
+    """Simulation context for the H2 line, read from the G2 results of the same protocol
+    (results/simulations_v2.json for v2, results/simulations.json for v1)."""
+    path = 'results/simulations_v2.json' if protocol == 'v2' else 'results/simulations.json'
+    try:
+        with open(path) as f:
+            res = json.load(f)['results']
+        s1 = res['S1']['R3']
+        s1_txt = ", ".join(f"{int(float(k) * 100)}% {v['M3-M4']['median']:+.3f}"
+                           for k, v in sorted(s1.items(), key=lambda kv: float(kv[0])))
+        s2 = [v['M3-M4']['median'] for v in res['S2'].values()]
+        return (f"G2 simulations ({protocol}, {path}): S1 M3 - M4 under a planted connectome effect {s1_txt}; "
+                f"S2 M3 - M4 with no connectome effect (M4 tuning noise) {max(s2):+.4f}")
+    except (OSError, KeyError, ValueError) as e:
+        return f"G2 simulation results for protocol {protocol} not available ({path}: {e.__class__.__name__})"
+
+
 # --------------------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
@@ -490,8 +507,7 @@ def main():
                               for k, s in r['parts'].items())
             print(f"   {r['test']:16s} p {r['p_raw']:.2g}, Holm {r['p_holm']:.2g} -> "
                   f"{'SUPPORTED' if r['supported'] else 'not supported'}   ({parts})")
-        sims = "S1 found the opposite sign (-0.032) under a planted connectome effect; S2 showed M4 tuning noise can favour H2 by about 0.003"
-        print(f"   notes: {sims}.")
+        print(f"   notes: {sim_note(cfg.protocol)}.")
         # rank of the real wiring among the shuffles, per fly (M3 vs each shuffle's final fit)
         for fr in fracs:
             ranks, ties = [], 0

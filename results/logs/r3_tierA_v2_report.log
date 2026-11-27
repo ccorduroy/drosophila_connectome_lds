@@ -1,0 +1,55 @@
+R3 tier A, protocol v2 (Q prior, kappa_Q = 1): 20 flies, fractions (0.25, 0.5, 0.75), hidden sets [0, 1, 2, 3, 4], shuffles [0, 1, 2, 3, 4], 3 validation folds; configs M0 5, M1 12, M2 16, M3 16, M4 16 (dropped for rho >= 0.98: 0); tuning 30 it, final <= 300 it; workers 6
+Baselines B4-B8, hidden-region Pearson r, median over flies (1 s):
+   25% hidden: B4 0.692, B5 0.704, B6 0.604, B7 0.588, B8 0.592
+   50% hidden: B4 0.621, B5 0.632, B6 0.560, B7 0.536, B8 0.538
+   75% hidden: B4 0.557, B5 0.574, B6 0.527, B7 0.500, B8 0.503
+
+Hidden-region r (smoothed), median over flies [filtered in brackets]; tier A' (protocol v2) = preliminary:
+   25% hidden: M0 0.000 [0.000], M1 -0.004 [-0.002], M2 0.600 [0.599], M3 0.619 [0.617], M4 0.599 [0.597]
+   50% hidden: M0 0.000 [0.000], M1 -0.010 [-0.022], M2 0.548 [0.547], M3 0.572 [0.570], M4 0.547 [0.545]
+   75% hidden: M0 0.000 [0.000], M1 0.003 [0.001], M2 0.518 [0.515], M3 0.535 [0.533], M4 0.513 [0.511]
+   final fits: 135; rho(A) max 0.898 (0 >= 1, shrunk); 10 hit the 300-iteration cap
+   chosen configurations: 25%/set 0/M1: {'kappa': 0.01, 'd': 0.0}; 25%/set 0/M2: {'kappa': 1.0, 'd': 0.75, 'a_u': 0.0}; 25%/set 0/M3: {'kappa': 1.0, 'd': 0.75, 'a_u': 0.0, 'a_w': 1.0}; 25%/set 0/M4: {'kappa': 1.0, 'd': 0.0, 'a_u': 0.5, 'a_w': 0.0}; 50%/set 0/M1: {'kappa': 0.01, 'd': 0.0}; 50%/set 0/M2: {'kappa': 1.0, 'd': 0.75, 'a_u': 0.0}; 50%/set 0/M3: {'kappa': 1.0, 'd': 0.75, 'a_u': 0.0, 'a_w': 1.0}; 50%/set 0/M4: {'kappa': 1.0, 'd': 0.0, 'a_u': 0.0, 'a_w': 0.0}; 75%/set 0/M1: {'kappa': 0.01, 'd': 0.0}; 75%/set 0/M2: {'kappa': 1.0, 'd': 0.75, 'a_u': 0.0}; 75%/set 0/M3: {'kappa': 1.0, 'd': 0.75, 'a_u': 0.0, 'a_w': 1.0}; 75%/set 0/M4: {'kappa': 1.0, 'd': 0.25, 'a_u': 0.5, 'a_w': 2.0}
+
+Hidden-set summary (median over flies of the paired difference, per set; sign count over sets):
+   25% hidden:
+      set 0: M3-M1 +0.471  M3-M4 +0.027  M3-M2 +0.027
+      set 1: M3-M1 +0.698  M3-M4 +0.034  M3-M2 +0.032
+      set 2: M3-M1 +0.740  M3-M4 +0.022  M3-M2 +0.020
+      set 3: M3-M1 +0.560  M3-M4 +0.024  M3-M2 +0.022
+      set 4: M3-M1 +0.612  M3-M4 +0.024  M3-M2 +0.022
+      over sets: M3-M1 positive in 5/5 (median +0.612, sign test p 0.062); M3-M4 positive in 5/5 (median +0.024, sign test p 0.062); M3-M2 positive in 5/5 (median +0.022, sign test p 0.062)
+   50% hidden:
+      set 0: M3-M1 +0.554  M3-M4 +0.030  M3-M2 +0.023
+      set 1: M3-M1 +0.596  M3-M4 +0.018  M3-M2 +0.018
+      set 2: M3-M1 +0.575  M3-M4 +0.028  M3-M2 +0.027
+      set 3: M3-M1 +0.593  M3-M4 +0.028  M3-M2 +0.031
+      set 4: M3-M1 +0.535  M3-M4 +0.024  M3-M2 +0.025
+      over sets: M3-M1 positive in 5/5 (median +0.575, sign test p 0.062); M3-M4 positive in 5/5 (median +0.028, sign test p 0.062); M3-M2 positive in 5/5 (median +0.025, sign test p 0.062)
+   75% hidden:
+      set 0: M3-M1 +0.535  M3-M4 +0.018  M3-M2 +0.014
+      set 1: M3-M1 +0.557  M3-M4 +0.028  M3-M2 +0.021
+      set 2: M3-M1 +0.529  M3-M4 +0.023  M3-M2 +0.023
+      set 3: M3-M1 +0.491  M3-M4 +0.021  M3-M2 +0.017
+      set 4: M3-M1 +0.529  M3-M4 +0.014  M3-M2 +0.013
+      over sets: M3-M1 positive in 5/5 (median +0.529, sign test p 0.062); M3-M4 positive in 5/5 (median +0.021, sign test p 0.062); M3-M2 positive in 5/5 (median +0.017, sign test p 0.062)
+      (with 5 sets the smallest possible two-sided sign-test p is 0.0625; tier B has 10 sets)
+
+Primary family (Holm over 7; supported = Holm p < 0.05, median >= 0.02, 95% CI > 0):
+   H1 25%           p 1.9e-06, Holm 1.3e-05 -> SUPPORTED   (M3-M1: median +0.6170 [+0.5807, +0.6544])
+   H2 25%           p 1.9e-06, Holm 1.3e-05 -> SUPPORTED   (M3-M4: median +0.0270 [+0.0240, +0.0308]; M3-M2: median +0.0257 [+0.0231, +0.0293])
+   H1 50%           p 1.9e-06, Holm 1.3e-05 -> SUPPORTED   (M3-M1: median +0.5753 [+0.5375, +0.6006])
+   H2 50%           p 1.9e-06, Holm 1.3e-05 -> SUPPORTED   (M3-M4: median +0.0252 [+0.0242, +0.0285]; M3-M2: median +0.0246 [+0.0227, +0.0278])
+   H1 75%           p 1.9e-06, Holm 1.3e-05 -> SUPPORTED   (M3-M1: median +0.5386 [+0.4910, +0.5599])
+   H2 75%           p 1.9e-06, Holm 1.3e-05 -> not supported   (M3-M4: median +0.0212 [+0.0187, +0.0224]; M3-M2: median +0.0182 [+0.0159, +0.0198])
+   H3 (75% - 25%)   p 3.8e-06, Holm 1.3e-05 -> not supported   (gap75-gap25: median -0.0054 [-0.0097, -0.0038])
+   notes: G2 simulations (v2, results/simulations_v2.json): S1 M3 - M4 under a planted connectome effect 25% +0.030, 50% +0.033, 75% +0.025; S2 M3 - M4 with no connectome effect (M4 tuning noise) +0.0026.
+   25%: rank of real wiring among 6 (1 = best; ties counted in its favour), median over flies 1; best in 20/20 flies
+   50%: rank of real wiring among 6 (1 = best; ties counted in its favour), median over flies 1; best in 20/20 flies
+   75%: rank of real wiring among 6 (1 = best; ties counted in its favour), median over flies 1; best in 20/20 flies
+   Kalman vs baselines (median over flies of M3 - B): 25%: B6 +0.016, B7 +0.038, B8 +0.034; 50%: B6 +0.016, B7 +0.037, B8 +0.034; 75%: B6 +0.019, B7 +0.038, B8 +0.034
+   amendment 4 -- H2 is interpreted only if M3 reaches B6: 25%: yes; 50%: yes; 75%: yes
+   H1 against B8 (uniform average): 25%: median +0.034 [+0.031, +0.039]; 50%: median +0.034 [+0.032, +0.037]; 75%: median +0.034 [+0.031, +0.038]
+
+wall time this invocation 0.0 min
+results -> results/r3_tierA_v2.json

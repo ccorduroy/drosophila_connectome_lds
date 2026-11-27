@@ -1,0 +1,44 @@
+started 2026-11-27 02:10:00: simulate.py --npz data_processed/fly_ito36.npz --workers 6
+protocol v2 (Q prior, kappa_Q = 1); structure: Connectivity, n = 36; 20 flies x 1900 frames; fractions [0.25, 0.5, 0.75]; 3 hidden sets; 5 shuffles; workers 6
+S0 gauge: rel. loglik change under hidden rescaling/sign flip = 0.0e+00 (< 1e-8)
+   hidden r, 50% hidden, median over flies: M0 +0.000, M1 +0.000, M3 +0.077; max |r| M0/M1 = 0.000 (< 0.05)
+   S0: PASS
+   [S0: 231 s]
+
+S1 (true A aligned with the connectome), R3:
+   S1 25% hidden, M3 - M4: median +0.0305, HL +0.0306 [+0.0285, +0.0328], p = 1.91e-06  -> supported by the spec rule
+   S1 25% hidden, M3 - M2: median +0.0292, HL +0.0291 [+0.0271, +0.0312], p = 1.91e-06  -> supported by the spec rule
+      median hidden r: M0 0.000, M2 0.067, M3 0.097, M4 0.065
+   S1 50% hidden, M3 - M4: median +0.0329, HL +0.0326 [+0.0315, +0.0341], p = 1.91e-06  -> supported by the spec rule
+   S1 50% hidden, M3 - M2: median +0.0292, HL +0.0297 [+0.0284, +0.0309], p = 1.91e-06  -> supported by the spec rule
+      median hidden r: M0 0.000, M2 0.060, M3 0.090, M4 0.058
+   S1 75% hidden, M3 - M4: median +0.0250, HL +0.0251 [+0.0242, +0.0265], p = 1.91e-06  -> supported by the spec rule
+   S1 75% hidden, M3 - M2: median +0.0241, HL +0.0241 [+0.0231, +0.0253], p = 1.91e-06  -> supported by the spec rule
+      median hidden r: M0 0.000, M2 0.053, M3 0.077, M4 0.052
+   H3 quantity, (M3-M4 at 75%) - (M3-M4 at 25%): median -0.0057, HL -0.0056 [-0.0074, -0.0035], p = 4.77e-05
+S1, R2 (one-step R^2 on the last 30%, fit on the first m frames):
+   m =   30: median R^2 M0 -0.211, M2 0.005, M3 0.005, M4 0.003;  M3-M4 median -0.0000, HL +0.0001 [-0.0000, +0.0002], p = 0.522
+   m =  120: median R^2 M0 -0.072, M2 0.018, M3 0.021, M4 0.019;  M3-M4 median +0.0016, HL +0.0020 [+0.0011, +0.0028], p = 0.000483
+   m =  500: median R^2 M0 -0.005, M2 0.061, M3 0.061, M4 0.061;  M3-M4 median +0.0005, HL +0.0005 [+0.0003, +0.0008], p = 6.29e-05
+   m = 1000: median R^2 M0 0.034, M2 0.077, M3 0.077, M4 0.077;  M3-M4 median +0.0003, HL +0.0003 [+0.0001, +0.0005], p = 0.0107
+   R2: M3 beats M4 and M2 at m = 30 and the gap shrinks: no
+   S1: planted effect supported in R3 at every fraction (spec rule): PASS
+   [S1: 9001 s]
+
+S2 (true A unrelated to the connectome), R3:
+   S2 50% hidden, M3 - M4: median +0.0026, HL +0.0027 [+0.0022, +0.0034], p = 1.91e-06
+   S2 50% hidden, M3 - M2: median +0.0002, HL +0.0004 [-0.0001, +0.0010], p = 0.133
+      note: a difference is significant but below the 0.02 smallest effect of interest
+   S2: no false positive for H2 (spec rule): PASS
+   [S2: 2482 s]
+
+S3 (true A built from a permuted connectome), R3:
+   S3 50% hidden, M4match - M3: median +0.0067, HL +0.0069 [+0.0058, +0.0080], p = 1.91e-06
+   S3 50% hidden, M3 - M2: median -0.0033, HL -0.0034 [-0.0041, -0.0029], p = 1.91e-06
+   S3: matching permutation wins (significant), M3 not supported over M2: PASS
+   [S3: 1020 s]
+
+G2: PASS (S0 gauge, S1 detects, S2 and S3 no false positive)
+results -> results/simulations_v2.json
+
+exit 0 after 3.54 h at 2026-11-27 05:42:14
