@@ -3,7 +3,8 @@ Phase 5: R3 production run (tier A by default) -- hidden-region reconstruction w
 baselines B4-B8 recomputed as Pearson r, and the preliminary H1-H3 tests
 (Protocol and Model Spec, sections 2, 6, 10-12, 15; work plan phase 5, gate G4).
 
-    python run_r3.py --npz data_processed/fly_ito36.npz --workers 16          # tier A
+    python run_r3.py --npz data_processed/fly_ito36.npz --workers 16          # tier A', protocol v2
+    python run_r3.py ... --protocol v1 --report_only                           # the original tier A report
     python run_r3.py ... --smoke                                               # code check, not a result
     python run_r3.py ... --report_only                                         # re-print from the cache
 
@@ -37,6 +38,15 @@ and M3 - M2 per fraction, combined as an intersection-union test (p = max of the
 each of 3 fractions, H3 once; section 2, corrected Nov 24); a hypothesis is supported only if
 Holm p < 0.05, median paired difference >= 0.02 and the 95% bootstrap interval excludes 0.
 For H2 the median and interval rule must hold for both comparisons.
+
+Protocol v2 (default; tier B amendments approved Nov 26, recorded in seeds.json 'protocol_v2'):
+connectome inverse-Wishart prior on Q with kappa_Q = 1 (target from prior.q_target: visible block
+of the Stage A warm start, hidden blocks from the model's own wiring -- uniform M2, real M3,
+shuffled M4, none for M0/M1; Sigma0's hidden blocks by the same rule); configurations from
+random_search_v2 (kappa >= 0.01 for M1-M4); final-fit cap 300. Stage A warm starts are fitted
+without the Q prior, as before. Results go to results/r3_tierA_v2.json (cache
+results/r3_tierA_v2/) so the protocol-v1 results stay intact. Also reported: whether M3 reaches
+B6 before H2 is interpreted, and H1 against B8.
 
 Checkpointing: every finished fit is appended to <cache>/fits.jsonl (Stage A parameters as
 .npz); a rerun skips finished fits, so a crash loses at most the fits in flight.
@@ -87,9 +97,9 @@ def a0_for(model, cfg, perm=None):
     return P.prior_mean(model, n=n, Wt=Wt, **h)
 
 
-def configs_for(model, seeds, Wt, perms):
+def configs_for(model, seeds, Wt, perms, source='random_search'):
     """Committed random-search configurations, minus any with rho(A0) >= 0.98 (spec section 6)."""
-    src = seeds['random_search']['M3' if model in ('M3', 'M4') else model]
+    src = seeds[source]['M3' if model in ('M3', 'M4') else model]
     keep, dropped = [], []
     for c in src:
         h = {'d': c.get('d', 0.0), 'a_u': c.get('a_u', 0.0), 'a_w': c.get('a_w', 0.0)}
@@ -113,8 +123,15 @@ def _fit_and_score(job):
     segs = [np.where(vis, Y, np.nan) for f in order for Y in flies[f]]
     A0 = a0_for(job['model'], job['cfg'], job['perm'])
     init = em.warm_start(job['warm'], A0, vis) if job['warm'] is not None else None
+    qkw = {}
+    if job.get('kappa_Q', 0.0) > 0 and init is not None:
+        W = P.wiring_for(job['model'], Wt=_G['Wt'], perm=job['perm'], n=n)
+        Qt = P.q_target(job['warm'].Q, vis, W, job.get('q_frac', 0.5))
+        init.Q = Qt.copy()
+        init.Sigma0 = P.q_target(job['warm'].Sigma0, vis, W, job.get('q_frac', 0.5))
+        qkw = dict(Q_target=Qt, kappa_Q=job['kappa_Q'])
     t0 = time.perf_counter()
-    res = em.fit(segs, vis, A0, job['cfg'].get('kappa', 0.0), init=init, max_iter=job['max_iter'])
+    res = em.fit(segs, vis, A0, job['cfg'].get('kappa', 0.0), init=init, max_iter=job['max_iter'], **qkw)
     fit_s = time.perf_counter() - t0
     _, kept = em.e_step(segs, vis, res.params, keep=True)
     sc = np.zeros(n, bool); sc[list(job['score'])] = True
@@ -267,6 +284,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--npz', default='data_processed/fly_ito36.npz')
     ap.add_argument('--tier', default='A', choices=['A', 'B'])
+    ap.add_argument('--protocol', default='v2', choices=['v1', 'v2'])
     ap.add_argument('--matrix', default='Connectivity')
     ap.add_argument('--workers', type=int, default=os.cpu_count() or 1)
     ap.add_argument('--cache', default=None, help='default results/r3_tier<A|B>/fits.jsonl')
@@ -275,7 +293,7 @@ def main():
     ap.add_argument('--report_only', action='store_true', help='no fitting: report from the cache')
     ap.add_argument('--no_hash_check', action='store_true', help='never for a real run')
     cfg = ap.parse_args()
-    tag = f"r3_tier{cfg.tier}" + ('_smoke' if cfg.smoke else '')
+    tag = f"r3_tier{cfg.tier}" + ('_v2' if cfg.protocol == 'v2' else '') + ('_smoke' if cfg.smoke else '')
     cfg.cache = cfg.cache or f"results/{tag}/fits.jsonl"
     cfg.out = cfg.out or f"results/{tag}.json"
 
@@ -285,7 +303,8 @@ def main():
     if 'random_search' not in seeds:
         raise RuntimeError("seeds.json has no random-search configurations: run `python integrity.py --amend`, "
                            "re-hash and commit first")
-    tier = tier_settings(seeds, cfg.tier)
+    tier = tier_settings(seeds, cfg.tier, cfg.protocol)
+    kQ = tier['kappa_Q'] if tier['q_prior'] else 0.0
     if cfg.tier == 'B':
         raise NotImplementedError("tier B adds M5, R1 and R2; run tier A first (spec section 15)")
     flies, names, S, _ = K.load_standardised(cfg.npz)
@@ -302,10 +321,11 @@ def main():
 
     cfgs, dropped = {}, {}
     for m in MODELS:
-        cfgs[m], dropped[m] = configs_for(m, seeds, Wt, perms)
+        cfgs[m], dropped[m] = configs_for(m, seeds, Wt, perms, tier['random_search'])
         if cfg.smoke:
             cfgs[m] = cfgs[m][:2]
-    print(f"R3 tier {cfg.tier}: {len(order)} flies, fractions {fracs}, hidden sets {set_idx}, shuffles "
+    print(f"R3 tier {cfg.tier}, protocol {cfg.protocol}" + (f" (Q prior, kappa_Q = {kQ:g})" if kQ else "")
+          + f": {len(order)} flies, fractions {fracs}, hidden sets {set_idx}, shuffles "
           f"{tier['shuffles'] if not cfg.smoke else 'first 2'}, {n_folds} validation folds; configs "
           + ", ".join(f"{m} {len(cfgs[m])}" for m in MODELS)
           + f" (dropped for rho >= 0.98: {sum(len(v) for v in dropped.values())}); tuning {tune_iter} it, "
@@ -358,7 +378,8 @@ def main():
                             for si, pi in (enumerate(perms) if m == 'M4' else [(None, None)]):
                                 jobsB.append(dict(key=f"B|{fr}|{j}|fold{q}|{m}|c{ci}|s{si}", stage='B',
                                                   fit_hidden=h + v, score=v, model=m, cfg=c, perm=pi,
-                                                  warm=warm, max_iter=tune_iter))
+                                                  warm=warm, max_iter=tune_iter, kappa_Q=kQ,
+                                                  q_frac=tier['q_structured_frac']))
         if not cfg.report_only:
             run_stage(pool, cache, jobsB, 'B (tuning)')
         # Select
@@ -382,7 +403,8 @@ def main():
                     ci = chosen[(fr, j, m)]
                     for si, pi in (enumerate(perms) if m == 'M4' else [(None, None)]):
                         jobsC.append(dict(key=f"C|{fr}|{j}|{m}|c{ci}|s{si}", stage='C', fit_hidden=h, score=h,
-                                          model=m, cfg=cfgs[m][ci], perm=pi, warm=warm, max_iter=final_iter))
+                                          model=m, cfg=cfgs[m][ci], perm=pi, warm=warm, max_iter=final_iter,
+                                          kappa_Q=kQ, q_frac=tier['q_structured_frac']))
         if not cfg.report_only:
             run_stage(pool, cache, jobsC, 'C (final fits)')
     finally:
@@ -411,7 +433,8 @@ def main():
                 score_f[fr][m] = dict(zip(order, (float(x) for x in _fz(np.array(per_set_f), axis=0))))
 
     complete = all(m in score[fr] for fr in fracs for m in MODELS)
-    print(f"\nHidden-region r (smoothed), median over flies [filtered in brackets]; tier {cfg.tier} = preliminary:")
+    label = f"tier {cfg.tier}" + ("'" if cfg.protocol == 'v2' else '') + f" (protocol {cfg.protocol}) = preliminary"
+    print(f"\nHidden-region r (smoothed), median over flies [filtered in brackets]; {label}:")
     for fr in fracs:
         if all(m in score[fr] for m in MODELS):
             print(f"   {int(fr * 100)}% hidden: " + ", ".join(
@@ -424,6 +447,39 @@ def main():
               f"{cap} hit the {final_iter}-iteration cap")
         print("   chosen configurations: " + "; ".join(
             f"{int(fr*100)}%/set {j}/{m}: {cfgs[m][chosen[(fr, j, m)]]}" for fr in fracs for j in set_idx[:1] for m in MODELS[1:]))
+
+    # ---- hidden-set-level summary (added Nov 26): flies share each set's mask, tuning and joint fit,
+    #      so the hidden sets are the units that vary independently ----
+    set_level = {}
+    if complete:
+        from scipy.stats import binomtest
+        print("\nHidden-set summary (median over flies of the paired difference, per set; sign count over sets):")
+        for fr in fracs:
+            per = {}
+            for j in set_idx:
+                fly_r = {}
+                for m in MODELS:
+                    ci = chosen[(fr, j, m)]
+                    ks = [f"C|{fr}|{j}|{m}|c{ci}|s{si}" for si in (range(len(perms)) if m == 'M4' else [None])]
+                    fly_r[m] = np.array([_fz([cache.d[k]['per_fly'][f]['r_smooth'] for k in ks]) for f in order])
+                per[j] = {'M3-M1': float(np.median(fly_r['M3'] - fly_r['M1'])),
+                          'M3-M4': float(np.median(fly_r['M3'] - fly_r['M4'])),
+                          'M3-M2': float(np.median(fly_r['M3'] - fly_r['M2'])),
+                          'kappa0': [m for m in ('M2', 'M3', 'M4') if cfgs[m][chosen[(fr, j, m)]].get('kappa', 0) == 0]}
+            summ = {}
+            for comp in ('M3-M1', 'M3-M4', 'M3-M2'):
+                d = np.array([per[j][comp] for j in set_idx]); pos = int(np.sum(d > 0)); nz = int(np.sum(d != 0))
+                summ[comp] = {'positive': pos, 'nonzero': nz, 'median': float(np.median(d)),
+                              'sign_p': float(binomtest(pos, nz).pvalue) if nz else 1.0}
+            set_level[fr] = {'per_set': per, 'summary': summ}
+            print(f"   {int(fr * 100)}% hidden:")
+            for j in set_idx:
+                q = per[j]
+                print(f"      set {j}: M3-M1 {q['M3-M1']:+.3f}  M3-M4 {q['M3-M4']:+.3f}  M3-M2 {q['M3-M2']:+.3f}"
+                      + (f"   (kappa = 0 chosen for {', '.join(q['kappa0'])})" if q['kappa0'] else ''))
+            print("      over sets: " + "; ".join(f"{c} positive in {v['positive']}/{v['nonzero']} (median {v['median']:+.3f}, "
+                                                  f"sign test p {v['sign_p']:.2g})" for c, v in summ.items()))
+        print("      (with 5 sets the smallest possible two-sided sign-test p is 0.0625; tier B has 10 sets)")
 
     rows = []
     if complete and not cfg.smoke and set(fracs) == set(FRACTIONS):
@@ -438,31 +494,44 @@ def main():
         print(f"   notes: {sims}.")
         # rank of the real wiring among the shuffles, per fly (M3 vs each shuffle's final fit)
         for fr in fracs:
-            ranks = []
+            ranks, ties = [], 0
             for f in order:
                 m4 = []
                 for j in set_idx:
                     ci = chosen[(fr, j, 'M4')]
                     m4.append([cache.d[f"C|{fr}|{j}|M4|c{ci}|s{si}"]['per_fly'][f]['r_smooth'] for si in range(len(perms))])
                 per_shuffle = _fz(np.array(m4), axis=0)
-                ranks.append(int(np.sum(per_shuffle >= score[fr]['M3'][f])) + 1)
-            print(f"   {int(fr * 100)}%: rank of real wiring among {len(perms) + 1} (1 = best), median over flies "
-                  f"{np.median(ranks):.0f}; best in {sum(r == 1 for r in ranks)}/{len(order)} flies")
+                d = per_shuffle - score[fr]['M3'][f]
+                ranks.append(int(np.sum(d > 1e-12)) + 1); ties += int(np.sum(np.abs(d) <= 1e-12))
+            print(f"   {int(fr * 100)}%: rank of real wiring among {len(perms) + 1} (1 = best; ties counted in its favour), "
+                  f"median over flies {np.median(ranks):.0f}; best in {sum(r == 1 for r in ranks)}/{len(order)} flies"
+                  + (f"; {ties} fly-shuffle ties (identical models)" if ties else ''))
         print("   Kalman vs baselines (median over flies of M3 - B): " + "; ".join(
             f"{int(fr*100)}%: " + ", ".join(f"{b} {np.median([score[fr]['M3'][f] - B[fr][b][f] for f in order]):+.3f}"
                                            for b in ('B6', 'B7', 'B8')) for fr in fracs))
+        b6_ok = {fr: bool(np.median(list(score[fr]['M3'].values())) >= np.median(list(B[fr]['B6'].values())))
+                 for fr in fracs}
+        print("   amendment 4 -- H2 is interpreted only if M3 reaches B6: " + "; ".join(
+            f"{int(fr*100)}%: {'yes' if ok else 'NO, report this first'}" for fr, ok in b6_ok.items()))
+        h1b8 = {fr: paired(np.array([score[fr]['M3'][f] for f in order]), np.array([B[fr]['B8'][f] for f in order]))
+                for fr in fracs}
+        print("   H1 against B8 (uniform average): " + "; ".join(
+            f"{int(fr*100)}%: median {s_['median']:+.3f} [{s_['ci'][0]:+.3f}, {s_['ci'][1]:+.3f}]" for fr, s_ in h1b8.items()))
+        rows.append({'test': 'secondary: M3 reaches B6', 'by_fraction': {str(k): v for k, v in b6_ok.items()}})
+        rows.append({'test': 'secondary: H1 against B8', 'by_fraction': {str(k): v for k, v in h1b8.items()}})
     elif not complete:
         print("\n(run incomplete: rerun the same command to resume from the cache)")
     print(f"\nwall time this invocation {wall / 60:.1f} min")
 
     os.makedirs(os.path.dirname(cfg.out) or '.', exist_ok=True)
     with open(cfg.out, 'w') as f:
-        json.dump({'config': vars(cfg), 'tier': tier, 'n_configs': {m: len(cfgs[m]) for m in MODELS},
+        json.dump({'config': vars(cfg), 'tier': tier, 'protocol': cfg.protocol, 'n_configs': {m: len(cfgs[m]) for m in MODELS},
                    'dropped_configs': dropped, 'baselines_r': {str(k): v for k, v in B.items()},
                    'chosen': {f"{fr}|{j}|{m}": cfgs[m][ci] for (fr, j, m), ci in chosen.items()},
                    'score_smooth': {str(k): v for k, v in score.items()},
                    'score_filt': {str(k): v for k, v in score_f.items()},
-                   'tests': rows, 'diagnostics': diag, 'complete': complete}, f, indent=1, default=str)
+                   'tests': rows, 'set_level': {str(k): v for k, v in set_level.items()},
+                   'diagnostics': diag, 'complete': complete}, f, indent=1, default=str)
     print(f"results -> {cfg.out}")
 
 

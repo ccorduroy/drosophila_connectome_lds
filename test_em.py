@@ -9,6 +9,10 @@ U7  Standardisation invariance: rescaling a region's data by a constant c (and t
     parameters by the matching change of units) rescales that state and leaves per-region
     one-step R^2 and hidden-region r unchanged. Tested from a transformed start because the
     ridge initialisation is not itself scale-equivariant; this isolates the EM code.
+U5q Monotonicity with the connectome prior on Q (protocol v2): L non-decreasing every iteration,
+    with a never-observed region, kappa_Q in (0.1, 1).
+U10 kappa_Q = 0 reproduces the A-only EM exactly (same history, same parameters), and the Q target
+    keeps the visible block, is PD, and is decoupled for M0/M1 (protocol v2, Nov 26).
 U8  Reduction: r = 1e-6, C = I, one EM iteration equals the closed-form ridge-with-prior fit
     fit_prior() in analysis_demo.py (A = (X1 X0^T + lambda A0)(X0 X0^T + lambda I)^-1). The
     function is taken from that file's source (the file runs its whole analysis on import);
@@ -63,6 +67,48 @@ def test_U5_monotonic():
         worst = max(worst, d)
         assert d <= TOL_U5, (case, d)
     return worst
+
+
+def test_U5q_monotonic_q_prior():
+    worst = -np.inf
+    for case, kq in enumerate((0.1, 1.0)):
+        rng = np.random.default_rng(unit_seed(5, 10 + case))
+        n = 6
+        segs, _ = _data(n, (200, 150), rng)
+        vis = np.ones(n, bool); vis[[4, 5]] = False
+        segs = [np.where(vis, Y, np.nan) for Y in segs]
+        Wt = P.wiring(np.exp(rng.standard_normal((n, n))))
+        A0 = P.prior_mean('M3', Wt=Wt, d=0.25, a_u=0.25, a_w=0.5)
+        base = em.init_params(segs, vis, A0)
+        Qt = P.q_target(base.Q, vis, Wt)
+        init = base.copy(); init.Q = Qt.copy(); init.Sigma0 = P.q_target(base.Sigma0, vis, Wt)
+        res = em.fit(segs, vis, A0, 0.1, init=init, max_iter=60, tol=-np.inf, Q_target=Qt, kappa_Q=kq)
+        d = _check_monotone(res.history)
+        worst = max(worst, d)
+        assert d <= TOL_U5, (kq, d)
+    return worst
+
+
+def test_U10_q_prior_reduction():
+    rng = np.random.default_rng(unit_seed(10))
+    n = 6
+    segs, _ = _data(n, (200,), rng)
+    vis = np.ones(n, bool); vis[5] = False
+    segs = [np.where(vis, Y, np.nan) for Y in segs]
+    Wt = P.wiring(np.exp(rng.standard_normal((n, n))))
+    A0 = P.prior_mean('M3', Wt=Wt, d=0.25, a_u=0.25, a_w=0.5)
+    base = em.init_params(segs, vis, A0)
+    Qt = P.q_target(base.Q, vis, Wt)
+    a = em.fit(segs, vis, A0, 0.1, init=base, max_iter=20, tol=-np.inf)
+    b = em.fit(segs, vis, A0, 0.1, init=base, max_iter=20, tol=-np.inf, Q_target=Qt, kappa_Q=0.0)
+    assert a.history == b.history and np.array_equal(a.params.Q, b.params.Q) and np.array_equal(a.params.A, b.params.A)
+    v, h = np.flatnonzero(vis), np.flatnonzero(~vis)
+    sym = 0.5 * (base.Q + base.Q.T)
+    assert np.allclose(Qt[np.ix_(v, v)], sym[np.ix_(v, v)], atol=1e-8)          # visible block kept
+    assert np.linalg.eigvalsh(Qt).min() > 0
+    Q0 = P.q_target(base.Q, vis, None)
+    assert np.allclose(Q0[np.ix_(h, v)], 0) and np.allclose(np.diag(Q0)[h], np.mean(np.diag(sym)[v]))
+    return 'exact'
 
 
 def _transform(p: em.Params, D):
@@ -163,7 +209,8 @@ def test_prior_recipe():
 if __name__ == '__main__':
     ensure_seeds()
     ok = True
-    for f in (test_prior_recipe, test_U5_monotonic, test_U7_scale_invariance, test_U8_ridge_reduction):
+    for f in (test_prior_recipe, test_U5_monotonic, test_U5q_monotonic_q_prior, test_U7_scale_invariance,
+              test_U8_ridge_reduction, test_U10_q_prior_reduction):
         t0 = time.perf_counter()
         try:
             out = f(); res = 'PASS' + (f'  ({out})' if out is not None else '')

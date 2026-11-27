@@ -10,6 +10,11 @@ of 1,900 frames, shared (A, Q, R), noise floor 0.47 of variance as in the real d
 fly standardised per region like the real pipeline (S0-S3). Seeds: seeds.json rule
 [675, 100 + k, replicate] for Sk; hidden sets and shuffles from seeds.json.
 
+Protocol v2 (default, Nov 26): every R3 prior-model fit adds the connectome inverse-Wishart prior
+on Q (kappa_Q = 1, prior.q_target with the model's own wiring), and final fits are capped at 300
+iterations. R2 fits are fully observed, so the Q prior (which acts on hidden blocks) is not used
+there. Results go to results/simulations_v2.json; --protocol v1 reproduces the Nov 24 run.
+
 Simulation-only choices (fixed here, identical for every model):
   * d and a_u are held at the generating values (0.5, 0.25); kappa (0.01, 0.1, 1) and, for
     wiring models, a_w (0, 0.5, 1, 2) are tuned. R3: nested hiding (spec section 10) over the
@@ -155,7 +160,12 @@ def _r3_job(job):
     vis = np.ones(n, bool); vis[list(job['fit_hidden'])] = False
     segs = [np.where(vis, Y, np.nan) for f in flies for Y in f]       # hidden never enters the fit
     init = em.warm_start(job['warm'], job['A0'], vis) if job['warm'] is not None else None
-    res = em.fit(segs, vis, job['A0'], job['kappa'], init=init, max_iter=job['max_iter'])
+    qkw = {}
+    if job.get('kappa_Q', 0.0) > 0 and init is not None:             # protocol v2: prior on Q
+        Qt = P.q_target(job['warm'].Q, vis, job.get('Wq'))
+        init.Q = Qt.copy(); init.Sigma0 = P.q_target(job['warm'].Sigma0, vis, job.get('Wq'))
+        qkw = dict(Q_target=Qt, kappa_Q=job['kappa_Q'])
+    res = em.fit(segs, vis, job['A0'], job['kappa'], init=init, max_iter=job['max_iter'], **qkw)
     _, kept = em.e_step(segs, vis, res.params, keep=True)
     sc = np.zeros(n, bool); sc[list(job['score'])] = True
     out, k = [], 0
@@ -197,6 +207,18 @@ def _configs(model, cfg):
     if model in ('M1', 'M2'):
         return [{'kappa': k} for k in ks]
     return [{'kappa': k, 'a_w': a} for k in ks for a in cfg.tune_aw]
+
+
+def _Wq(kind, W, perm, n):
+    """Wiring for the Q target (protocol v2): uniform M2, the model's wiring M3 (or S3's matching
+    permutation), shuffled M4, none for M0/M1."""
+    if kind in ('M0', 'M1'):
+        return None
+    if kind == 'M2':
+        return P.uniform(n)
+    if kind == 'M4':
+        return P.permute(W, perm)
+    return W
 
 
 def _A0(model, Wt, h, perm=None):
@@ -252,7 +274,8 @@ def r3_scores(flies, Wt, models, fractions, n_sets, perms, cfg, extra_wirings=No
                             for pi_i, pi in enumerate(perms[:cfg.tune_perms] if kind == 'M4' else [None]):
                                 A0 = _A0(kind, W, {**c, 'Wt': W}, pi)
                                 jobsB.append(dict(fit_hidden=h + v, score=v, A0=A0, kappa=c['kappa'],
-                                                  warm=resA[(si, j)][1], max_iter=cfg.tune_iter, keep_params=False))
+                                                  warm=resA[(si, j)][1], max_iter=cfg.tune_iter, keep_params=False,
+                                                  kappa_Q=cfg.kappa_Q, Wq=_Wq(kind, W, pi, n)))
                                 keyB.append((si, name, ci))
             resB = _map(pool, _r3_job, jobsB)
             val_score = {}
@@ -272,7 +295,8 @@ def r3_scores(flies, Wt, models, fractions, n_sets, perms, cfg, extra_wirings=No
                     for pi in (perms if kind == 'M4' else [None]):
                         jobsC.append(dict(fit_hidden=h, score=h, A0=_A0(kind, W, {**c, 'Wt': W}, pi),
                                           kappa=c['kappa'], warm=resA[(si, None)][1], max_iter=cfg.max_iter,
-                                          keep_params=False)); keyC.append((si, name))
+                                          keep_params=False, kappa_Q=cfg.kappa_Q, Wq=_Wq(kind, W, pi, n)))
+                        keyC.append((si, name))
             resC = _map(pool, _r3_job, jobsC)
             per = {'M0': {si: [resA[(si, None)][0]] for si in range(len(sets))}}
             for (si, name), (sc, _, _) in zip(keyC, resC):
@@ -448,7 +472,9 @@ def main():
     ap.add_argument('--workers', type=int, default=os.cpu_count() or 1)
     ap.add_argument('--quick', action='store_true', help='small sizes: smoke test only, not a gate result')
     ap.add_argument('--no_hash_check', action='store_true', help='skip hashes.sha256 (never for gate runs)')
-    ap.add_argument('--out', default='results/simulations.json')
+    ap.add_argument('--protocol', default='v2', choices=['v1', 'v2'],
+                    help='v2 (Nov 26): connectome prior on Q (kappa_Q = 1) in R3 fits, final-fit cap 300')
+    ap.add_argument('--out', default=None, help='default results/simulations_v2.json (v1: results/simulations.json)')
     cfg = ap.parse_args()
     # Sizes (full run = what G2 is judged on)
     cfg.n_flies = 20; cfg.n_sets = 3; cfg.n_shuffles = 5
@@ -462,6 +488,10 @@ def main():
         cfg.n_val = 1; cfg.tune_iter = 5; cfg.tune_perms = 2; cfg.tune_kappa = [0.1, 1.0]; cfg.tune_aw = [0.0, 1.0]
         cfg.max_iter_m0 = 15; cfg.max_iter = 10; cfg.r2_m = [60, 500]; cfg.n_flies_r2 = 6; cfg.n_tune_flies = 3
 
+    cfg.kappa_Q = 1.0 if cfg.protocol == 'v2' else 0.0
+    if cfg.protocol == 'v2':
+        cfg.max_iter = 300 if not cfg.quick else cfg.max_iter
+    cfg.out = cfg.out or ('results/simulations_v2.json' if cfg.protocol == 'v2' else 'results/simulations.json')
     if not cfg.no_hash_check:
         check_hashes(required=[cfg.npz.replace('\\', '/')])
     seeds = ensure_seeds()
@@ -469,7 +499,7 @@ def main():
     _, names, S, _ = load(cfg.npz)
     Wt = P.wiring(S[cfg.matrix].values)
     perms = seeds['shuffles'][:cfg.n_shuffles]
-    print(f"structure: {cfg.matrix}, n = {len(names)}; {cfg.n_flies} flies x {T_FLY} frames; "
+    print(f"protocol {cfg.protocol}" + (" (Q prior, kappa_Q = 1)" if cfg.kappa_Q else "") + f"; structure: {cfg.matrix}, n = {len(names)}; {cfg.n_flies} flies x {T_FLY} frames; "
           f"fractions {cfg.fractions}; {cfg.n_sets} hidden sets; {cfg.n_shuffles} shuffles; "
           f"workers {cfg.workers}{'; QUICK MODE' if cfg.quick else ''}")
 

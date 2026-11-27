@@ -45,6 +45,7 @@ def build_seeds():
                 for s in range(20)]
     folds = {key: [validation_folds(sets[j], key, j) for j in range(len(sets))] for key, sets in hidden.items()}
     search = random_search_configs()
+    search_v2 = random_search_configs(kappas=(0.01, 0.1, 1.0), stream=401)
     return {
         'global_seed': GLOBAL_SEED,
         'n_regions': N_REGIONS,
@@ -56,12 +57,18 @@ def build_seeds():
             'simulations': 'simulation Sk, replicate r: default_rng([675, 100 + k, r]), k = 0..4 (spec section 13)',
             'unit_tests': 'unit test Uk, case c: default_rng([675, 1000 + k, c])',
             'random_search': 'R3 tuning configurations (spec section 10: 16 per variant): M0 uses all 5 kappa values; for M1, M2 and M3 (M3 shared by M4 and M5), the grid of section 6 restricted to d + a_u <= 0.9, in itertools.product order of (kappa, d, a_u, a_w), sampled without replacement by default_rng([675, 400, k]).choice(len(grid), 16), k = 1, 2, 3; configurations with rho(A0) >= 0.98 for the real wiring or any shuffle are dropped at run time and reported (adopted Nov 24)',
+            'random_search_v2': 'protocol v2 (tier B amendment 2, approved Nov 26): as random_search but with kappa restricted to (0.01, 0.1, 1) for M1-M4 and default_rng([675, 401, k]); M0 unchanged',
+            'protocol_v2': 'tier B amendments approved Nov 26 after the tier A run (spec section 12): connectome inverse-Wishart prior on Q with kappa_Q = 1 (prior.q_target, structured fraction 0.5); random_search_v2; final-fit cap 300; hidden-set summary, B6 check before H2 and H1 against B8 reported. Tier A results (protocol v1) stay reported as run',
             'validation_folds': 'hidden set j of fraction p: visible = sorted complement; order = default_rng([675, 300, int(100*p), j]).permutation(len(visible)); folds = array_split(visible[order], 3), each sorted. R3 tuning hides each fold in turn and scores the mean over the 3 (spec sections 10, 11; adopted Nov 23)',
         },
         'hidden_sets': hidden,
         'shuffles': shuffles,
         'validation_folds': folds,
         'random_search': search,
+        'random_search_v2': search_v2,
+        'protocol_v2': {'q_prior': True, 'kappa_Q': 1.0, 'q_structured_frac': 0.5,
+                        'random_search': 'random_search_v2', 'final_em_iters_max': 300,
+                        'approved': '2026-11-26'},
         'tiers': {
             'A': {'hidden_sets': [0, 1, 2, 3, 4], 'shuffles': list(range(10)),
                   'models': ['M0', 'M1', 'M2', 'M3', 'M4'], 'regimes': ['R3'],
@@ -80,14 +87,17 @@ SEARCH_GRID = {'kappa': (0.0, 0.001, 0.01, 0.1, 1.0), 'd': (0.0, 0.25, 0.5, 0.75
 SEARCH_FREE = {'M1': ('kappa', 'd'), 'M2': ('kappa', 'd', 'a_u'), 'M3': ('kappa', 'd', 'a_u', 'a_w')}
 
 
-def random_search_configs(k=16):
+def random_search_configs(k=16, kappas=None, stream=400):
     import itertools
-    out = {'M0': [{'kappa': v} for v in SEARCH_GRID['kappa']]}
+    grid = dict(SEARCH_GRID)
+    if kappas is not None:
+        grid['kappa'] = tuple(kappas)
+    out = {'M0': [{'kappa': v} for v in SEARCH_GRID['kappa']]}        # M0 keeps all 5 (amendment 2 is M1-M4)
     for idx, m in enumerate(('M1', 'M2', 'M3'), start=1):
         names = SEARCH_FREE[m]
-        pts = [dict(zip(names, v)) for v in itertools.product(*(SEARCH_GRID[x] for x in names))
+        pts = [dict(zip(names, v)) for v in itertools.product(*(grid[x] for x in names))
                if v[names.index('d')] + (v[names.index('a_u')] if 'a_u' in names else 0.0) <= 0.9]
-        pick = np.random.default_rng([GLOBAL_SEED, 400, idx]).choice(len(pts), min(k, len(pts)), replace=False)
+        pick = np.random.default_rng([GLOBAL_SEED, stream, idx]).choice(len(pts), min(k, len(pts)), replace=False)
         out[m] = [{x: float(y) for x, y in pts[i].items()} for i in sorted(int(j) for j in pick)]
     return out
 
@@ -161,13 +171,22 @@ def amend_seeds(reason, path=SEEDS_PATH):
     return have
 
 
-def tier_settings(seeds, tier):
+def tier_settings(seeds, tier, protocol='v1'):
     """Effective settings of tier 'A' or 'B': seeds['tiers'][tier] with every recorded
-    reduction for that tier applied in order. Harness code reads tiers only through this."""
+    reduction for that tier applied in order, then (protocol 'v2') the Nov 26 amendments.
+    Harness code reads tiers only through this."""
     t = copy.deepcopy(seeds['tiers'][tier])
     for red in seeds.get('reductions', []):
         if red.get('tier') == tier:
             t[red['setting']] = red['value']
+    t.update({'q_prior': False, 'kappa_Q': 0.0, 'q_structured_frac': 0.5, 'random_search': 'random_search'})
+    if protocol == 'v2':
+        if 'protocol_v2' not in seeds:
+            raise RuntimeError("seeds.json has no protocol_v2 entry: run `python integrity.py --amend`, re-hash and commit")
+        t.update({k: v for k, v in seeds['protocol_v2'].items() if k != 'approved'})
+    elif protocol != 'v1':
+        raise ValueError(protocol)
+    t['protocol'] = protocol
     return t
 
 
@@ -238,7 +257,7 @@ if __name__ == '__main__':
     import argparse
     ap = argparse.ArgumentParser(description='seeds.json and hash checks')
     ap.add_argument('--amend', action='store_true', help='add newly adopted seed rules to an existing seeds.json')
-    ap.add_argument('--reason', default='R3 random-search configurations adopted Nov 24 (spec section 10)')
+    ap.add_argument('--reason', default='protocol v2: tier B amendments approved Nov 26 (Q prior, kappa >= 0.01 grid, cap 300; spec section 12)')
     ap.add_argument('--check', action='store_true', help='verify seeds.json and hashes.sha256')
     ap.add_argument('--tier_a_5_shuffles', action='store_true',
                     help='record the Nov 23 reduction: tier A uses shuffles 0-4, M4 tuned and scored on the same 5')

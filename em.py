@@ -19,6 +19,12 @@ Stop when the gain in L per observed entry is below 1e-6 for 5 consecutive itera
 at max_iter. A decrease of more than 1e-8 (relative) raises EMDecreaseError.
 Hidden regions (R3) have no r_i; their rows/columns of A and Q are learned only through
 the prior and their coupling to visible regions.
+
+Optional connectome prior on Q (tier B amendment 1, approved Nov 26): Q ~ IW(nu Q_target),
+nu = kappa_Q N, conjugate with the matrix-normal prior on A. The Q update becomes
+    Q = [S11 - A S10^T - S10 A^T + A S00 A^T + lambda (A - A0)(A - A0)^T + nu Q_target] / (N + n + nu)
+and L gains - (nu/2) log|Q| - (nu/2) tr(Q^-1 Q_target). kappa_Q = 0 (default) reproduces the
+A-only EM exactly. Q_target comes from prior.q_target().
 """
 from __future__ import annotations
 
@@ -119,13 +125,15 @@ def e_step(segments: Sequence[np.ndarray], obs, p: Params, steady_state: bool = 
     return (st, kept) if keep else st
 
 
-def m_step(st: Stats, p: Params, A0: np.ndarray, kappa: float) -> Params:
+def m_step(st: Stats, p: Params, A0: np.ndarray, kappa: float, Q_target=None, kappa_Q: float = 0.0) -> Params:
     n = A0.shape[0]
     lam = kappa * st.N
+    nu = kappa_Q * st.N if Q_target is not None else 0.0
     I = np.eye(n)
     A = np.linalg.solve((st.S00 + lam * I).T, (st.S10 + lam * A0).T).T
     D = A - A0
-    Q = (st.S11 - A @ st.S10.T - st.S10 @ A.T + A @ st.S00 @ A.T + lam * D @ D.T) / (st.N + n)
+    R = st.S11 - A @ st.S10.T - st.S10 @ A.T + A @ st.S00 @ A.T + lam * D @ D.T
+    Q = (R + nu * Q_target) / (st.N + n + nu) if nu > 0 else R / (st.N + n)
     Q = _floor_eig(Q, Q_FLOOR)
     r = p.r.copy()
     vis = st.N_i > 0
@@ -133,14 +141,18 @@ def m_step(st: Stats, p: Params, A0: np.ndarray, kappa: float) -> Params:
     return Params(A, Q, r, p.Sigma0)
 
 
-def log_posterior(st: Stats, p: Params, A0: np.ndarray, kappa: float) -> float:
+def log_posterior(st: Stats, p: Params, A0: np.ndarray, kappa: float, Q_target=None,
+                  kappa_Q: float = 0.0) -> float:
     n = A0.shape[0]
     lam = kappa * st.N
+    nu = kappa_Q * st.N if Q_target is not None else 0.0
     sign, logdet = np.linalg.slogdet(p.Q)
     L = st.loglik - 0.5 * n * logdet
     if lam > 0:
         D = p.A - A0
         L -= 0.5 * lam * np.trace(np.linalg.solve(p.Q, D @ D.T))
+    if nu > 0:
+        L -= 0.5 * nu * logdet + 0.5 * nu * np.trace(np.linalg.solve(p.Q, Q_target))
     return float(L)
 
 
@@ -220,17 +232,20 @@ def warm_start(p: Params, A0, vis) -> Params:
 
 # --------------------------------------------------------------------------------------
 def fit(segments, obs, A0, kappa, init: Optional[Params] = None, max_iter=300, tol=1e-6,
-        patience=5, steady_state=True, rho_shrink=True, verbose=False) -> FitResult:
-    """Fit (A, Q, r) by EM with prior mean A0 and relative strength kappa (lambda = kappa N)."""
+        patience=5, steady_state=True, rho_shrink=True, verbose=False, Q_target=None,
+        kappa_Q: float = 0.0) -> FitResult:
+    """Fit (A, Q, r) by EM with prior mean A0 and relative strength kappa (lambda = kappa N);
+    optionally with the inverse-Wishart prior on Q (Q_target, kappa_Q; nu = kappa_Q N)."""
     A0 = np.asarray(A0, np.float64)
     p = init.copy() if init is not None else init_params(segments, obs, A0)
+    qp = dict(Q_target=Q_target, kappa_Q=kappa_Q)
     st = e_step(segments, obs, p, steady_state)
-    L = log_posterior(st, p, A0, kappa)
+    L = log_posterior(st, p, A0, kappa, **qp)
     hist = [L]; small = 0; converged = False; it = 0
     for it in range(1, max_iter + 1):
-        p = m_step(st, p, A0, kappa)
+        p = m_step(st, p, A0, kappa, **qp)
         st = e_step(segments, obs, p, steady_state)
-        Lnew = log_posterior(st, p, A0, kappa)
+        Lnew = log_posterior(st, p, A0, kappa, **qp)
         if Lnew < L - 1e-8 * abs(L):
             raise EMDecreaseError(f"log posterior decreased at iteration {it}: {L:.10g} -> {Lnew:.10g}")
         gain = (Lnew - L) / st.n_obs
@@ -257,7 +272,8 @@ def fit(segments, obs, A0, kappa, init: Optional[Params] = None, max_iter=300, t
         'min_eig_Q': float(np.linalg.eigvalsh(p.Q).min()),
         'r_max': float(np.nanmax(p.r[st.N_i > 0])), 'r_min': float(np.nanmin(p.r[st.N_i > 0])),
         'frac_neg_A0_offdiag': float(np.mean(A0[~np.eye(len(A0), dtype=bool)] < 0)),
-        'N': st.N, 'n_obs': st.n_obs, 'kappa': kappa, 'flags': flags,
+        'N': st.N, 'n_obs': st.n_obs, 'kappa': kappa, 'kappa_Q': kappa_Q if Q_target is not None else 0.0,
+        'flags': flags,
     }
     return FitResult(p, A0, kappa, L, hist, it, converged, flags, diag)
 

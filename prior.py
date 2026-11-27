@@ -135,3 +135,54 @@ def sample_configs(model, k, rng, Wt=None, grid=GRID, perm=None):
     pts = grid_points(model, Wt, grid, perm)
     idx = rng.choice(len(pts), size=min(k, len(pts)), replace=False)
     return [pts[i] for i in sorted(idx)]
+
+
+def q_target(base, vis, W=None, structured_frac=0.5, floor=1e-6):
+    """Scale matrix (prior mean) for the connectome prior on Q, and the same rule for Sigma0
+    (spec section 12, tier B amendment 1, approved Nov 26).
+
+    base : n x n matrix whose visible block is kept (the M0 warm start's Q or Sigma0; it never
+           contains hidden-region data). vis : (n,) bool. W : the model's wiring (uniform for M2,
+           real W~ for M3, shuffled W~ for M4, distance wiring for M5) or None for M0/M1.
+    Hidden blocks: G = W[hidden, visible] row-normalised; Q_hv = g G Q_vv; Q_hh = g^2 G Q_vv G^T +
+    (1 - f) qbar I, with g chosen so the structured part carries a fraction f (= 0.5) of the mean
+    visible variance qbar. W = None: Q_hv = 0, Q_hh = qbar I (hidden regions decoupled)."""
+    base = 0.5 * (np.asarray(base, np.float64) + np.asarray(base, np.float64).T)
+    vis = np.asarray(vis, bool)
+    v, h = np.flatnonzero(vis), np.flatnonzero(~vis)
+    T = base.copy()
+    if h.size == 0:
+        return T
+    Bvv = base[np.ix_(v, v)]
+    qbar = float(np.mean(np.diag(Bvv)))
+    T[h, :] = 0.0; T[:, h] = 0.0
+    if W is None:
+        T[np.ix_(h, h)] = qbar * np.eye(len(h))
+    else:
+        G = np.asarray(W, np.float64)[np.ix_(h, v)]
+        rs = G.sum(1, keepdims=True)
+        if np.any(rs <= 0):
+            raise ValueError("a hidden region has no wiring weight onto visible regions")
+        G = G / rs
+        C = G @ Bvv @ G.T
+        g = np.sqrt(structured_frac * qbar / np.mean(np.diag(C)))
+        T[np.ix_(h, v)] = g * G @ Bvv
+        T[np.ix_(v, h)] = T[np.ix_(h, v)].T
+        T[np.ix_(h, h)] = g * g * C + (1.0 - structured_frac) * qbar * np.eye(len(h))
+    w, V = np.linalg.eigh(0.5 * (T + T.T))
+    return (V * np.maximum(w, floor)) @ V.T
+
+
+def wiring_for(model, Wt=None, perm=None, Wdist=None, n=None):
+    """The wiring matrix a model's Q target uses (None = decoupled)."""
+    if model in ('M0', 'M1'):
+        return None
+    if model == 'M2':
+        return uniform(n if n is not None else Wt.shape[0])
+    if model == 'M3':
+        return Wt
+    if model == 'M4':
+        return permute(Wt, perm)
+    if model == 'M5':
+        return Wdist
+    raise ValueError(model)
