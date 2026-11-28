@@ -140,7 +140,7 @@ def main():
     ap.add_argument('--npz', default='data_processed/fly_ito36.npz')
     ap.add_argument('--centroids', default='data_processed/centroids_ito36.npz')
     ap.add_argument('--matrix', default='Connectivity')
-    ap.add_argument('--protocol', default='v2', choices=['v1', 'v2'])
+    ap.add_argument('--protocol', default='v3', choices=['v1', 'v2', 'v3'])
     ap.add_argument('--by', default='fly', choices=['fly', 'day'], help='day = leave-one-recording-day-out sensitivity run')
     ap.add_argument('--workers', type=int, default=os.cpu_count() or 1)
     ap.add_argument('--cache', default=None)

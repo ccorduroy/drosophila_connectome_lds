@@ -94,12 +94,15 @@ def a0_for(model, cfg, perm=None):
         return np.zeros((n, n))
     if model == 'M4':
         return P.prior_mean('M4', Wt=Wt, perm=perm, **h)
+    if model == 'M5':                       # distance prior: M3's recipe on exp(-D / l) (spec section 6)
+        return P.prior_mean('M3', Wt=_G['Wd'], **h)
     return P.prior_mean(model, n=n, Wt=Wt, **h)
 
 
-def configs_for(model, seeds, Wt, perms, source='random_search'):
-    """Committed random-search configurations, minus any with rho(A0) >= 0.98 (spec section 6)."""
-    src = seeds[source]['M3' if model in ('M3', 'M4') else model]
+def configs_for(model, seeds, Wt, perms, source='random_search', Wd=None):
+    """Committed random-search configurations, minus any with rho(A0) >= 0.98 (spec section 6).
+    M4 and M5 use M3's configurations (seeds.json rules); M5's check uses the distance wiring Wd."""
+    src = seeds[source]['M3' if model in ('M3', 'M4', 'M5') else model]
     keep, dropped = [], []
     for c in src:
         h = {'d': c.get('d', 0.0), 'a_u': c.get('a_u', 0.0), 'a_w': c.get('a_w', 0.0)}
@@ -107,6 +110,8 @@ def configs_for(model, seeds, Wt, perms, source='random_search'):
             ok = True
         elif model == 'M4':
             ok = all(P.spectral_radius(P.prior_mean('M4', Wt=Wt, perm=p, **h)) < 0.98 for p in perms)
+        elif model == 'M5':
+            ok = P.spectral_radius(P.prior_mean('M3', Wt=Wd, **h)) < 0.98
         else:
             ok = P.spectral_radius(P.prior_mean(model, n=Wt.shape[0], Wt=Wt, **h)) < 0.98
         (keep if ok else dropped).append(c)
@@ -125,7 +130,7 @@ def _fit_and_score(job):
     init = em.warm_start(job['warm'], A0, vis) if job['warm'] is not None else None
     qkw = {}
     if job.get('kappa_Q', 0.0) > 0 and init is not None:
-        W = P.wiring_for(job['model'], Wt=_G['Wt'], perm=job['perm'], n=n)
+        W = P.wiring_for(job['model'], Wt=_G['Wt'], perm=job['perm'], Wdist=_G.get('Wd'), n=n)
         Qt = P.q_target(job['warm'].Q, vis, W, job.get('q_frac', 0.5))
         init.Q = Qt.copy()
         init.Sigma0 = P.q_target(job['warm'].Sigma0, vis, W, job.get('q_frac', 0.5))
@@ -225,6 +230,55 @@ def reuse_v2_fits(cache, seeds, Wt, perms, cfgs, v2_path, kQ):
     print(f"  reused {added} finished protocol-v2 fits from {v2_path} (nesting checked)", flush=True)
 
 
+def reuse_fits(cache, seeds, Wt, Wd, src_tier, src_protocol, src_path, tier, cfgs, n_folds):
+    """Copy finished fits of another R3 run (e.g. tier A-prime v3 into tier B v3) whose jobs are the same
+    computation as a job of this run. A job is defined by its stage, fraction, hidden set (seeds.json index),
+    validation fold, model, configuration (matched by value, not index) and shuffle (matched by shuffle
+    id), plus the iteration caps, the Q prior and the warm start (stage A of the same mask, itself reused only
+    when identical). Settings that would change any fit must agree, else nothing is reused."""
+    src = tier_settings(seeds, src_tier, src_protocol)
+    for k in ('tuning_em_iters', 'final_em_iters_max', 'q_prior', 'kappa_Q', 'q_structured_frac', 'random_search'):
+        if src[k] != tier[k]:
+            raise RuntimeError(f"--reuse_from: {k} differs ({src[k]} vs {tier[k]}): no reuse")
+    if n_folds != 3:
+        raise RuntimeError("--reuse_from: validation folds differ: no reuse")
+    src_perms = [seeds['shuffles'][s] for s in src['shuffles']]
+    src_cfgs = {m: configs_for(m, seeds, Wt, src_perms, src['random_search'], Wd)[0] for m in src['models']}
+    dst_sid = {s: i for i, s in enumerate(tier['shuffles'])}
+    sets_dst = set(tier['hidden_sets'])
+    if not os.path.exists(src_path):
+        raise RuntimeError(f"{src_path} not found")
+    srcc = Cache(src_path)
+    added = skipped = 0
+    for key, r in srcc.d.items():
+        p = key.split('|')
+        if int(p[2]) not in sets_dst:
+            skipped += 1; continue
+        if p[0] == 'A':
+            new = key
+        else:
+            m, ci, si = (p[4], p[5], p[6]) if p[0] == 'B' else (p[3], p[4], p[5])
+            if m not in cfgs:
+                skipped += 1; continue
+            c = src_cfgs[m][int(ci[1:])]
+            if c not in cfgs[m]:
+                skipped += 1; continue
+            nci = f"c{cfgs[m].index(c)}"
+            if m == 'M4':
+                sid = src['shuffles'][int(si[1:])]
+                if sid not in dst_sid:
+                    skipped += 1; continue
+                nsi = f"s{dst_sid[sid]}"
+            else:
+                nsi = si
+            new = '|'.join(p[:4] + [m, nci, nsi]) if p[0] == 'B' else '|'.join(p[:3] + [m, nci, nsi])
+        if new in cache.d:
+            continue
+        cache.add({**r, 'key': new}); added += 1
+    print(f"  reused {added} finished fits from {src_path} (tier {src_tier}, protocol {src_protocol}; matched by "
+          f"configuration value and shuffle id; {skipped} not applicable)", flush=True)
+
+
 # --------------------------------------------------------------------------------------
 # Baselines B4-B8 as Pearson r (same hidden sets and metric)
 # --------------------------------------------------------------------------------------
@@ -307,6 +361,11 @@ def tests(score, order):
     for r, pr, pa in zip(rows, raw, adj):
         r['p_raw'], r['p_holm'] = float(pr), float(pa)
         r['supported'] = bool(pa < 0.05 and all(s['median'] >= SESOI_R and s['ci'][0] > 0 for s in r['parts'].values()))
+    if 'M5' in score[FRACTIONS[0]]:              # secondary, outside the Holm family: wiring vs proximity
+        for fr in FRACTIONS:
+            s5 = paired(v(fr, 'M3'), v(fr, 'M5'))
+            rows.append({'test': f'secondary: M3 - M5 {int(fr * 100)}%', 'parts': {'M3-M5': s5}, 'p_raw': s5['p'],
+                         'meets_rule_uncorrected': bool(s5['p'] < 0.05 and s5['median'] >= SESOI_R and s5['ci'][0] > 0)})
     return rows
 
 
@@ -338,6 +397,10 @@ def main():
                     help='v3 only: copy finished v2 fits whose job is identical (same stage, mask, model, '
                          'configuration and shuffle; checked) into the v3 cache instead of refitting them')
     ap.add_argument('--matrix', default='Connectivity')
+    ap.add_argument('--centroids', default='data_processed/centroids_ito36.npz', help='frozen distances for M5 (tier B)')
+    ap.add_argument('--reuse_from', default=None,
+                    help='TIER,PROTOCOL,FITS.jsonl: copy finished fits of that run whose jobs are identical to jobs of '
+                         'this run (same stage, mask, model, configuration and shuffle, matched by value; checked)')
     ap.add_argument('--workers', type=int, default=os.cpu_count() or 1)
     ap.add_argument('--cache', default=None, help='default results/r3_tier<A|B>/fits.jsonl')
     ap.add_argument('--out', default=None, help='default results/r3_tier<A|B>.json')
@@ -357,12 +420,20 @@ def main():
                            "re-hash and commit first")
     tier = tier_settings(seeds, cfg.tier, cfg.protocol)
     kQ = tier['kappa_Q'] if tier['q_prior'] else 0.0
-    if cfg.tier == 'B':
-        raise NotImplementedError("tier B adds M5, R1 and R2; run tier A first (spec section 15)")
+    global MODELS
+    MODELS = tuple(tier['models'])
+    if 'R3' not in tier['regimes']:
+        raise RuntimeError(f"tier {cfg.tier} settings do not include R3")
     flies, names, S, _ = K.load_standardised(cfg.npz)
     order = sorted(flies)
     n = len(names)
     Wt = P.wiring(S[cfg.matrix].values)
+    Wd = None
+    if 'M5' in MODELS:
+        from build_distances import load_distances
+        if not cfg.no_hash_check:
+            check_hashes(required=[cfg.centroids.replace('\\', '/')])
+        Wd = P.distance_wiring(load_distances(cfg.centroids, names)[0])
     perms = [seeds['shuffles'][s] for s in tier['shuffles']]
     set_idx = tier['hidden_sets']
     fracs = FRACTIONS
@@ -373,7 +444,7 @@ def main():
 
     cfgs, dropped = {}, {}
     for m in MODELS:
-        cfgs[m], dropped[m] = configs_for(m, seeds, Wt, perms, tier['random_search'])
+        cfgs[m], dropped[m] = configs_for(m, seeds, Wt, perms, tier['random_search'], Wd)
         if cfg.smoke:
             cfgs[m] = cfgs[m][:2]
     print(f"R3 tier {cfg.tier}, protocol {cfg.protocol}" + (f" (Q prior, kappa_Q = {kQ:g})" if kQ else "")
@@ -399,15 +470,18 @@ def main():
         if cfg.protocol != 'v3' or cfg.smoke:
             raise ValueError("--reuse_v2 is for the full protocol-v3 run only")
         reuse_v2_fits(cache, seeds, Wt, perms, cfgs, f"results/r3_tier{cfg.tier}_v2/fits.jsonl", kQ)
+    if cfg.reuse_from and not cfg.report_only:
+        src_tier, src_protocol, src_path = cfg.reuse_from.split(',')
+        reuse_fits(cache, seeds, Wt, Wd, src_tier, src_protocol, src_path, tier, cfgs, n_folds)
     pool = None
     if not cfg.report_only:
-        payload = {'flies': flies, 'order': order, 'n': n, 'Wt': Wt}
+        payload = {'flies': flies, 'order': order, 'n': n, 'Wt': Wt, 'Wd': Wd}
         if cfg.workers > 1:
             pool = ProcessPoolExecutor(cfg.workers, initializer=_init, initargs=(payload,))
         else:
             _init(payload)
     else:
-        _init({'flies': flies, 'order': order, 'n': n, 'Wt': Wt})
+        _init({'flies': flies, 'order': order, 'n': n, 'Wt': Wt, 'Wd': Wd})
     t_run = time.perf_counter()
     try:
         # Stage A
@@ -489,7 +563,8 @@ def main():
                 score_f[fr][m] = dict(zip(order, (float(x) for x in _fz(np.array(per_set_f), axis=0))))
 
     complete = all(m in score[fr] for fr in fracs for m in MODELS)
-    label = f"tier {cfg.tier}" + {"v2": "'", "v3": "' (grid-edge extension)"}.get(cfg.protocol, '') + f" (protocol {cfg.protocol}) = preliminary"
+    label = (f"tier B (protocol {cfg.protocol}) = confirmatory" if cfg.tier == 'B' else
+             f"tier {cfg.tier}" + {"v2": "'", "v3": "' (grid-edge extension)"}.get(cfg.protocol, '') + f" (protocol {cfg.protocol}) = preliminary")
     print(f"\nHidden-region r (smoothed), median over flies [filtered in brackets]; {label}:")
     for fr in fracs:
         if all(m in score[fr] for m in MODELS):
@@ -521,9 +596,10 @@ def main():
                 per[j] = {'M3-M1': float(np.median(fly_r['M3'] - fly_r['M1'])),
                           'M3-M4': float(np.median(fly_r['M3'] - fly_r['M4'])),
                           'M3-M2': float(np.median(fly_r['M3'] - fly_r['M2'])),
+                          **({'M3-M5': float(np.median(fly_r['M3'] - fly_r['M5']))} if 'M5' in fly_r else {}),
                           'kappa0': [m for m in ('M2', 'M3', 'M4') if cfgs[m][chosen[(fr, j, m)]].get('kappa', 0) == 0]}
             summ = {}
-            for comp in ('M3-M1', 'M3-M4', 'M3-M2'):
+            for comp in [c for c in ('M3-M1', 'M3-M4', 'M3-M2', 'M3-M5') if c in per[set_idx[0]]]:
                 d = np.array([per[j][comp] for j in set_idx]); pos = int(np.sum(d > 0)); nz = int(np.sum(d != 0))
                 summ[comp] = {'positive': pos, 'nonzero': nz, 'median': float(np.median(d)),
                               'sign_p': float(binomtest(pos, nz).pvalue) if nz else 1.0}
@@ -532,10 +608,11 @@ def main():
             for j in set_idx:
                 q = per[j]
                 print(f"      set {j}: M3-M1 {q['M3-M1']:+.3f}  M3-M4 {q['M3-M4']:+.3f}  M3-M2 {q['M3-M2']:+.3f}"
+                      + (f"  M3-M5 {q['M3-M5']:+.3f}" if 'M3-M5' in q else "")
                       + (f"   (kappa = 0 chosen for {', '.join(q['kappa0'])})" if q['kappa0'] else ''))
             print("      over sets: " + "; ".join(f"{c} positive in {v['positive']}/{v['nonzero']} (median {v['median']:+.3f}, "
                                                   f"sign test p {v['sign_p']:.2g})" for c, v in summ.items()))
-        print("      (with 5 sets the smallest possible two-sided sign-test p is 0.0625; tier B has 10 sets)")
+        print(f"      (with {len(set_idx)} sets the smallest possible two-sided sign-test p is {2 * 0.5 ** len(set_idx):.4g})")
 
     rows = []
     if complete and not cfg.smoke and set(fracs) == set(FRACTIONS):
@@ -544,6 +621,10 @@ def main():
         for r in rows:
             parts = "; ".join(f"{k}: median {s['median']:+.4f} [{s['ci'][0]:+.4f}, {s['ci'][1]:+.4f}]"
                               for k, s in r['parts'].items())
+            if 'p_holm' not in r:
+                ok = ' -> meets the rule' if r['meets_rule_uncorrected'] else ""
+                print(f"   {r['test']} (uncorrected): p {r['p_raw']:.2g}{ok}   ({parts})")
+                continue
             print(f"   {r['test']:16s} p {r['p_raw']:.2g}, Holm {r['p_holm']:.2g} -> "
                   f"{'SUPPORTED' if r['supported'] else 'not supported'}   ({parts})")
         print(f"   notes: {sim_note(cfg.protocol)}.")
